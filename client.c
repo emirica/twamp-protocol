@@ -26,13 +26,22 @@
 #define PORTBASE_RECV    20000
 #define TEST_SESSIONS    1
 #define TEST_MESSAGES    1
+#define TIMEOUT          2 /* SECONDS */
+
+struct twamp_test_info {
+    int testfd;
+    int testport;
+    uint16_t port;
+};
 
 static enum Mode authmode = kModeUnauthenticated;
 static int port_send = PORTBASE_SEND;
 static int port_recv = PORTBASE_RECV;
 static int test_sessions_no = TEST_SESSIONS;
 static int test_sessions_msg = TEST_MESSAGES;
+static int active_sessions = 0;
 
+/* The function that prints the help for this program */
 static void usage(char *progname)
 {
     fprintf(stderr, "Usage: %s [options]\n", progname);
@@ -48,6 +57,7 @@ static void usage(char *progname)
     return;
 }
 
+/* The parse_options will check the command line arguments */
 static int parse_options(struct hostent **server, char *progname, int argc, char *argv[])
 {
     if (argc < 2) {
@@ -92,6 +102,7 @@ static int parse_options(struct hostent **server, char *progname, int argc, char
     return 0;
 }
 
+/* This function sends StopSessions to stop all active Test sessions */
 static int send_stop_session(int socket, int accept, int sessions)
 {
     StopSessions stop;
@@ -110,6 +121,7 @@ static int send_start_sessions(int socket)
     return send(socket, &start, sizeof(start), 0);
 }
 
+/* The function will return a significant message for a given code */
 static char *get_accept_str(int code)
 {
     switch (code) {
@@ -166,7 +178,7 @@ int main(int argc, char *argv[])
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     serv_addr.sin_port = htons(SERVER_PORT);
 
-    printf("Connecting to server...\n\n");
+    printf("Connecting to server %s...\n", inet_ntoa(serv_addr.sin_addr));
     if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Error connecting");
         exit(EXIT_FAILURE);
@@ -188,10 +200,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "The server does not support any usable Mode\n");
         exit(EXIT_FAILURE);
     }
-    printf("Received ServerGreeting.\n\n");
+    printf("Received ServerGreeting.\n");
 
     /* Compute SetUpResponse */
-    printf("Sending SetUpResponse...\n\n");
+    printf("Sending SetUpResponse...\n");
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
     resp.Mode = greet.Modes & authmode;
@@ -217,98 +229,161 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Request failed: %s\n", get_accept_str(start.Accept));
         exit(EXIT_FAILURE);
     }
-    printf("Received ServerStart.\n\n");
+    printf("Received ServerStart.\n");
 
     /* After the TWAMP-Control connection has been established, the
      * Control-Client will negociate and set up some TWAMP-Test sessions */
 
-    /* Setup test socket */
-    int testfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (testfd < 0) {
-        perror("Error opening socket");
+    struct twamp_test_info *twamp_test = malloc(test_sessions_no * sizeof(struct twamp_test_info));
+    if (!twamp_test) {
+        fprintf(stderr, "Error on malloc\n");
+        close(servfd);
         exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in local_addr;
-    memset(&local_addr, 0, sizeof(local_addr));
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = INADDR_ANY;
+    int i;
+    /* Set TWAMP-Test sessions */
+    for (i = 0; i < test_sessions_no; i++) {
 
-    int testport = 20000 + rand() % 1000;
-    while (1) {
-        testport = 20000 + rand() % 1000;
-        local_addr.sin_port = ntohs(testport);
-        if (!bind(testfd, (struct sockaddr *)&local_addr,
-                  sizeof(struct sockaddr)))
-            break;
+        /* Setup test socket */
+        twamp_test[active_sessions].testfd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (twamp_test[active_sessions].testfd < 0) {
+            perror("Error opening socket");
+            continue;
+        }
+
+        struct sockaddr_in local_addr;
+        memset(&local_addr, 0, sizeof(local_addr));
+        local_addr.sin_family = AF_INET;
+        local_addr.sin_addr.s_addr = INADDR_ANY;
+
+        /* Try to bind on an available port */
+        while (1) {
+            twamp_test[active_sessions].testport = port_send + rand() % 1000;
+            local_addr.sin_port = ntohs(twamp_test[active_sessions].testport);
+            if (!bind(twamp_test[active_sessions].testfd, (struct sockaddr *)&local_addr,
+                      sizeof(struct sockaddr)))
+                break;
+        }
+
+        printf("Sending RequestTWSession for port %d...\n", twamp_test[active_sessions].testport);
+        RequestSession req;
+        memset(&req, 0, sizeof(req));
+        req.Type = kRequestTWSession;
+        req.IPVN = 4;
+        req.SenderPort = ntohs(twamp_test[active_sessions].testport);
+        req.ReceiverPort = ntohs(port_recv + rand() % 1000);
+        req.PaddingLength = 27;     // As defined in RFC 6038#4.2 // TODO: correct?
+        TWAMPTimestamp timestamp = get_timestamp();
+        timestamp.integer = htonl(ntohl(timestamp.integer) + 10);   // TODO: 10 seconds?
+        req.StartTime = timestamp;
+        struct timeval timeout;
+        timeout.tv_sec = TIMEOUT;
+        timeout.tv_usec = 0;
+        timeval_to_timestamp(&timeout, &req.Timeout);
+
+        /* Trying to send the RequestTWSession request for this TWAMP-Test */
+        rv = send(servfd, &req, sizeof(req), 0);
+        if (rv <= 0) {
+            fprintf(stderr, "[%d] ", twamp_test[active_sessions].testport);
+            perror("Error sending RequestTWSession message");
+            close(twamp_test[active_sessions].testfd);
+            free(twamp_test);
+            close(servfd);
+            exit(EXIT_FAILURE);
+        }
+
+        /* See the Server's response */
+        AcceptSession acc;
+        memset(&acc, 0, sizeof(acc));
+        rv = recv(servfd, &acc, sizeof(acc), 0);
+        if (rv <= 0) {
+            fprintf(stderr, "[%d] ", twamp_test[active_sessions].testport);
+            perror("Error receiving Accept Session");
+            close(twamp_test[active_sessions].testfd);
+            free(twamp_test);
+            close(servfd);
+            exit(EXIT_FAILURE);
+        }
+        /* See the Server response to this RequestTWSession message */
+        if (acc.Accept != kOK) {
+            close(twamp_test[active_sessions].testfd);
+            continue;
+        }
+        twamp_test[active_sessions].port = acc.Port;
+        active_sessions++;
+
     }
 
-
-    printf("Sending RequestSession...\n\n");
-    RequestSession req;
-    memset(&req, 0, sizeof(req));
-
-    req.Type = kRequestTWSession;
-    req.IPVN = 4;
-    req.SenderPort = ntohs(testport);
-    req.ReceiverPort = ntohs(testport);
-    req.PaddingLength = 27;     // As defined in RFC 6038#4.2 // TODO: correct?
-    TWAMPTimestamp timestamp = get_timestamp();
-    timestamp.integer = htonl(ntohl(timestamp.integer) + 10);   // TODO: 10 seconds?
-    req.StartTime = timestamp;
-    struct timeval timeout;
-    timeout.tv_sec = 2;
-    timeout.tv_usec = 0;
-    timeval_to_timestamp(&timeout, &req.Timeout);
-
-    rv = send(servfd, &req, sizeof(req), 0);
-    if (rv <= 0) {
-        perror("Error sending Session request message");
-        exit(EXIT_FAILURE);
+    if (active_sessions) {
+        printf("Sending StartSessions for all active ports ...\n");
+        /* If there are any accepted Test-Sessions then send
+         * the StartSessions message */
+        rv = send_start_sessions(servfd);
+        if (rv <= 0) {
+            perror("Error sending StartSessions");
+            /* Close all TWAMP-Test sockets */
+            for (i = 0; i < active_sessions; i++)
+                close(twamp_test[i].testfd);
+            free(twamp_test);
+            close(servfd);
+            exit(EXIT_FAILURE);
+        }
     }
 
-    AcceptSession acc;
-    rv = recv(servfd, &acc, sizeof(acc), 0);
-    if (rv <= 0) {
-        perror("Error receiving Accept Session");
-        exit(EXIT_FAILURE);
+    /* For each accepted TWAMP-Test session send test_sessions_msg
+     * TWAMP-Test packets */
+    for (i = 0; i < active_sessions; i++) {
+        int j;
+        for (j = 0; j < test_sessions_msg; j++) {
+            UPacket pack;
+            memset(&pack, 0, sizeof(pack));
+
+            pack.seq_number = i * test_sessions_msg + j;
+            pack.time = get_timestamp();
+            pack.error_estimate = 1;    // TODO:Multiplyer = 1.
+            pack.sender_ttl = 255;
+
+            printf("Sending TWAMP-Test message %d for port %d...\n", j + 1, twamp_test[i].testport);
+            serv_addr.sin_port = twamp_test[i].port;
+            rv = sendto(twamp_test[i].testfd, &pack, sizeof(pack), 0,
+                        (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+            if (rv <= 0) {
+                perror("Error sending test packet");
+                continue;
+            }
+
+            socklen_t len = sizeof(serv_addr);
+            rv = recvfrom(twamp_test[i].testfd, &pack, sizeof(pack), 0,
+                          (struct sockaddr *)&serv_addr, &len);
+            if (rv <= 0) {
+                perror("Error receiving test reply");
+                continue;
+            }
+            printf("Received TWAMP-Test message response %d for port %d.\n", j + 1, twamp_test[i].testport);
+            /* TODO: do something with these timestamps */
+        }
     }
 
-    rv = send_start_sessions(servfd);
-    if (rv <= 0) {
-        perror("Error sending Start Sessions");
-        exit(EXIT_FAILURE);
+    /* After all TWAMP-Test packets were sent, send a StopSessions
+     * packet and finish */
+    if (active_sessions) {
+        printf("Sending StopSessions for all active ports ...\n");
+        rv = send_stop_session(servfd, kOK, 1);
+        if (rv <= 0) {
+            perror("Error sending stop session");
+            /* Close all TWAMP-Test sockets */
+            for (i = 0; i < active_sessions; i++)
+                close(twamp_test[i].testfd);
+            free(twamp_test);
+            close(servfd);
+            exit(EXIT_FAILURE);
+        }
     }
-
-    UPacket pack;
-    memset(&pack, 0, sizeof(pack));
-
-    pack.seq_number = 0;
-    pack.time = get_timestamp();
-    pack.error_estimate = 1;    // TODO:Multiplyer = 1.
-    pack.sender_ttl = 255;
-
-    serv_addr.sin_port = acc.Port;
-    rv = sendto(testfd, &pack, sizeof(pack), 0,
-                (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-    if (rv <= 0) {
-        perror("Error sending test packet");
-        exit(EXIT_FAILURE);
-    }
-
-    socklen_t len;
-    rv = recvfrom(testfd, &pack, sizeof(pack), 0,
-                  (struct sockaddr *)&serv_addr, &len);
-    if (rv <= 0) {
-        perror("Error receiving test reply");
-        exit(EXIT_FAILURE);
-    }
-
-    rv = send_stop_session(servfd, kOK, 1);
-    if (rv <= 0) {
-        perror("Error sending stop session");
-        exit(EXIT_FAILURE);
-    }
-
+    /* Close all TWAMP-Test sockets */
+    for (i = 0; i < active_sessions; i++)
+        close(twamp_test[i].testfd);
+    free(twamp_test);
+    close(servfd);
     return 0;
 }
