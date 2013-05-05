@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
 
 #include "twamp.h"
 
@@ -144,7 +145,7 @@ static int send_greeting(uint8_t mode_mask, struct client_info *client)
 
     int rv = send(socket, &greet, sizeof(greet), 0);
     if (rv < 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send ServerGreeting message");
         cleanup_client(client);
     } else {
@@ -164,7 +165,7 @@ static int receive_greet_response(struct client_info *client)
     memset(&resp, 0, sizeof(resp));
     int rv = recv(socket, &resp, sizeof(resp) * 2, 0);
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to receive SetUpResponse");
         cleanup_client(client);
     } else {
@@ -186,7 +187,7 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
     msg.StartTime = StartTime;
     int rv = send(socket, &msg, sizeof(msg), 0);
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send ServerStart message");
         cleanup_client(client);
     } else {
@@ -205,7 +206,7 @@ static int send_start_ack(struct client_info *client)
     ack.Accept = kOK;
     int rv = send(client->socket, &ack, sizeof(ack), 0);
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send StartACK message");
     } else
         printf("StartACK message sent to %s\n", inet_ntoa(client->addr.sin_addr));
@@ -252,8 +253,11 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
     /* Check if there are any slots available */
     if ((used_sockets < 64) && (client->sess_no < MAX_SESSIONS_PER_CLIENT)) {
         int testfd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (testfd < 0)
+        if (testfd < 0) {
+            fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
             perror("Error opening socket");
+            return -1;
+        }
 
         struct sockaddr_in local_addr;
         memset(&local_addr, 0, sizeof(local_addr));
@@ -288,7 +292,7 @@ static int receive_request_session(struct client_info *client,
     printf("Received RequestTWSession from %s\n", inet_ntoa(client->addr.sin_addr));
     int rv = send_accept_session(client, req);
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send RequestTWSession accept");
     }
     return rv;
@@ -302,14 +306,14 @@ static int receive_request_session(struct client_info *client,
 static int receive_test_message(struct client_info *client, int session_index)
 {
     struct sockaddr_in addr;
-    socklen_t len;
+    socklen_t len = sizeof(addr);
     UPacket pack;
     memset(&pack, 0, sizeof(pack));
     int rv =
         recvfrom(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
                  (struct sockaddr*) &addr, &len);
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(addr.sin_addr));
         perror("Failed to receive TWAMP-Test packet");
         return rv;
     }
@@ -326,7 +330,7 @@ static int receive_test_message(struct client_info *client, int session_index)
     rv = sendto(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
                 (struct sockaddr*) &addr, sizeof(addr));
     if (rv <= 0) {
-        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send TWAMP-Test packet");
     }
     return rv;
@@ -335,6 +339,7 @@ static int receive_test_message(struct client_info *client, int session_index)
 int main(int argc, char *argv[])
 {
     char *progname = NULL;
+    srand(time(NULL));
     /* Obtain the program name without the full path */
     progname = (progname = strrchr(argv[0], '/')) ? progname + 1 : *argv;
 
