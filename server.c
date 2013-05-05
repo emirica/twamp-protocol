@@ -81,8 +81,6 @@ static int parse_options(char *progname, int argc, char *argv[])
             port_max = port_min + 1000;
             break;
         case 'h':
-            usage(progname);
-            break;
         default:
             return 1;
         }
