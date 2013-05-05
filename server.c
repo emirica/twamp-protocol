@@ -47,7 +47,10 @@ static int fd_max = 0;
 static int port_min = PORTBASE;
 static int port_max = PORTBASE + 1000;
 static enum Mode authmode = kModeUnauthenticated;
+static int used_sockets = 0;
+static fd_set read_fds;
 
+/* Prints the help of the TWAMP server */
 static void usage(char *progname)
 {
     fprintf(stderr, "Usage: %s [options]\n", progname);
@@ -60,6 +63,7 @@ static void usage(char *progname)
     return;
 }
 
+/* Parses the command line arguments for the server */
 static int parse_options(char *progname, int argc, char *argv[])
 {
     int opt;
@@ -89,44 +93,90 @@ static int parse_options(char *progname, int argc, char *argv[])
     return 0;
 }
 
-static int send_greeting(struct client_info *client)
+/* The cleanup_client function will close every connection (TWAMP-Control ot
+ * TWAMP-Test that this server has with the client defined by the client_infor
+ * structure received as a parameter.
+ */
+static void cleanup_client(struct client_info *client)
+{
+    fprintf(stderr, "Cleanup client %s\n", inet_ntoa(client->addr.sin_addr));
+    FD_CLR(client->socket, &read_fds);
+    close(client->socket);
+    used_sockets--;
+    int i;
+    for (i = 0; i < client->sess_no; i++) {
+        FD_CLR(client->sessions[i].socket, &read_fds);
+        close(client->sessions[i].socket);
+        used_sockets--;
+    }
+    memset(client, 0, sizeof(struct client_info));
+    client->status = kOffline;
+}
+
+/* The TWAMP server can only accept max_clients and it will recycle the
+ * positions for the available clients.
+ */
+static int find_empty_client(struct client_info *clients, int max_clients)
+{
+    int i;
+    for (i = 0; i < max_clients; i++)
+        if (clients[i].status == kOffline)
+            return i;
+    return -1;
+}
+
+/* Sends a ServerGreeting message to the Control-Client after
+ * the TCP connection has been established.
+ */
+static int send_greeting(uint8_t mode_mask, struct client_info *client)
 {
     int socket = client->socket;
+    int i;
     ServerGreeting greet;
     memset(&greet, 0, sizeof(greet));
-    greet.Modes = kModeUnauthenticated;
-    int i;
+    greet.Modes = authmode & mode_mask;
+
     for (i = 0; i < 16; i++)
         greet.Challenge[i] = rand() % 16;
     for (i = 0; i < 16; i++)
         greet.Salt[i] = rand() % 16;
     greet.Count = (1 << 12);    // TODO: should it be more?
+
     int rv = send(socket, &greet, sizeof(greet), 0);
-    if (rv < 0)
-        perror("Failed to send GREET message");
-    else {
-        printf("Sent GREET message to %s. Result %d\n",
+    if (rv < 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to send ServerGreeting message");
+        cleanup_client(client);
+    } else {
+        printf("Sent ServerGreeting message to %s. Result %d\n",
                inet_ntoa(client->addr.sin_addr), rv);
     }
     return rv;
 }
 
+/* After a ServerGreeting the Control-Client should respond with a
+ * SetUpResponse. This function treats this message
+ */
 static int receive_greet_response(struct client_info *client)
 {
     int socket = client->socket;
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
     int rv = recv(socket, &resp, sizeof(resp) * 2, 0);
-    if (rv < 0)
-        perror("Failed to receive response");
-    else {
-        printf("Received GreetResponse message from %s. Result %d\n",
-               inet_ntoa(client->addr.sin_addr), rv);
-        printf("Mode %d\n", resp.Mode);
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to receive SetUpResponse");
+        cleanup_client(client);
+    } else {
+        printf("Received SetUpResponse message from %s with mode %d. Result %d\n",
+               inet_ntoa(client->addr.sin_addr), resp.Mode, rv);
     }
     return rv;
 }
 
+/* Sent a ServerStart message to the Control-Client to end
+ * the TWAMP-Control session establishment phase
+ */
 static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
 {
     int socket = client->socket;
@@ -134,19 +184,76 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
     memset(&msg, 0, sizeof(msg));
     msg.Accept = kOK;
     msg.StartTime = StartTime;
-    return send(socket, &msg, sizeof(msg), 0);
+    int rv = send(socket, &msg, sizeof(msg), 0);
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to send ServerStart message");
+        cleanup_client(client);
+    } else {
+        client->status = kConfigured;
+        printf("ServerStart message sent to %s\n",
+               inet_ntoa(client->addr.sin_addr));
+    }
+    return rv;
 }
 
-static int send_accept_session(struct client_info *client, RequestSession * req,
-                               int *used_sockets)
+/* Sends a StartACK for the StartSessions message */
+static int send_start_ack(struct client_info *client)
+{
+    StartACK ack;
+    memset(&ack, 0, sizeof(ack));
+    ack.Accept = kOK;
+    int rv = send(client->socket, &ack, sizeof(ack), 0);
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to send StartACK message");
+    } else
+        printf("StartACK message sent to %s\n", inet_ntoa(client->addr.sin_addr));
+    return rv;
+}
+
+/* This function treats the case when a StartSessions is received from the
+ * Control-Client to start a number of TWAMP-Test sessions
+ */
+static int receive_start_sessions(struct client_info *client,
+                                  StartSessions * req)
+{
+    int i;
+    int rv = send_start_ack(client);
+    if (rv <= 0)
+        return rv;
+
+    for (i = 0; i < client->sess_no; i++) {
+        FD_SET(client->sessions[i].socket, &read_fds);
+        if (fd_max < client->sessions[i].socket)
+            fd_max = client->sessions[i].socket;
+    }
+    client->status = kTesting;
+    return rv;
+}
+
+/* This functions treats the case when a StopSessions is received from
+ * the Control-Client to end all the Test sessions.
+ */
+static int receive_stop_sessions(struct client_info *client,
+                                 StopSessions * req)
+{
+    /* TODO: timeout */
+    client->status = kConfigured;
+    return 0;
+}
+
+/* Computes the response to a RequestTWSession message */
+static int send_accept_session(struct client_info *client, RequestSession * req)
 {
     AcceptSession acc;
     memset(&acc, 0, sizeof(acc));
 
-    if ((*used_sockets < 64) && (client->sess_no < MAX_SESSIONS_PER_CLIENT)) {
+    /* Check if there are any slots available */
+    if ((used_sockets < 64) && (client->sess_no < MAX_SESSIONS_PER_CLIENT)) {
         int testfd = socket(AF_INET, SOCK_DGRAM, 0);
         if (testfd < 0)
-            perror("ERROR opening socket");
+            perror("Error opening socket");
 
         struct sockaddr_in local_addr;
         memset(&local_addr, 0, sizeof(local_addr));
@@ -155,10 +262,9 @@ static int send_accept_session(struct client_info *client, RequestSession * req,
         local_addr.sin_port = req->ReceiverPort;
 
         // TODO: check N times then send failure
-        while (bind
-               (testfd, (struct sockaddr *)&local_addr,
+        while (bind(testfd, (struct sockaddr *)&local_addr,
                 sizeof(struct sockaddr)) < 0)
-            local_addr.sin_port = 20000 + rand() % 1000;
+            local_addr.sin_port = port_min + rand() % 1000;
 
         req->ReceiverPort = local_addr.sin_port;
         acc.Accept = kOK;
@@ -175,93 +281,55 @@ static int send_accept_session(struct client_info *client, RequestSession * req,
     return rv;
 }
 
+/* This function treats the case when a RequestTWSession is received */
 static int receive_request_session(struct client_info *client,
-                                   RequestSession * req, int *used_sockets)
+                                   RequestSession * req)
 {
-    printf("Received REQ SESS\n");
-    // TODO check
-    int rv = send_accept_session(client, req, used_sockets);
-    if (rv < 0)
-        perror("ERROR in send accept");
-    return rv;
-}
-
-static int send_start_ack(struct client_info *client)
-{
-    StartACK ack;
-    memset(&ack, 0, sizeof(ack));
-    ack.Accept = kOK;
-    return send(client->socket, &ack, sizeof(ack), 0);
-}
-
-static int receive_start_sessions(struct client_info *client,
-                                  StartSessions * req, fd_set * read_fds)
-{
-    int rv = send_start_ack(client);
-    int i;
-    for (i = 0; i < client->sess_no; i++) {
-        FD_SET(client->sessions[i].socket, read_fds);
-        if (fd_max < client->sessions[i].socket)
-            fd_max = client->sessions[i].socket;
+    printf("Received RequestTWSession from %s\n", inet_ntoa(client->addr.sin_addr));
+    int rv = send_accept_session(client, req);
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to send RequestTWSession accept");
     }
     return rv;
 }
 
-static int receive_stop_sessions(struct client_info *client, StopSessions * req,
-                                 fd_set * read_fds)
-{
-    client->status = kConfigured;
-    return 0;
-}
-
+/* This function will receive a TWAMP-Test packet and will send a response. In
+ * TWAMP the Session-Sender (in our case the Control-Client, meaning the
+ * TWAMP-Client) is always sending TWAMP-Test packets and the Session-Reflector
+ * (Server) is receiving TWAMP-Test packets.
+ */
 static int receive_test_message(struct client_info *client, int session_index)
 {
-    printf("RECEIVED test message\n");
+    struct sockaddr_in addr;
+    socklen_t len;
     UPacket pack;
     memset(&pack, 0, sizeof(pack));
-    struct sockaddr addr;
-    int len;
     int rv =
         recvfrom(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
-                 &addr, (socklen_t *) & len);
-    // TODO: check rv?
-    pack.sender_seq_number = pack.seq_number;
+                 (struct sockaddr*) &addr, &len);
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(addr.sin_addr));
+        perror("Failed to receive TWAMP-Test packet");
+        return rv;
+    }
+    printf("Received TWAMP-Test message from %s\n", inet_ntoa(addr.sin_addr));
     static uint32_t seq_nr = 0;
+    pack.sender_seq_number = pack.seq_number;
     pack.seq_number = seq_nr++;
     pack.sender_error_estimate = pack.error_estimate;
     pack.sender_time = pack.time;
     pack.receive_time = get_timestamp();
     pack.sender_ttl = 255;      // TODO: compute TTL with recvmsg
 
+    addr.sin_port = client->sessions[session_index].req.SenderPort;
     rv = sendto(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
-                &addr, sizeof(addr));
-    return rv;
-}
-
-static void cleanup_client(struct client_info *client, fd_set * read_fds,
-                           int *used_sockets)
-{
-    printf("CLEANUP client\n");
-    FD_CLR(client->socket, read_fds);
-    close(client->socket);
-    (*used_sockets)--;
-    int i;
-    for (i = 0; i < client->sess_no; i++) {
-        FD_CLR(client->sessions[i].socket, read_fds);
-        close(client->sessions[i].socket);
-        (*used_sockets)--;
+                (struct sockaddr*) &addr, sizeof(addr));
+    if (rv <= 0) {
+        fprintf(stderr, "[%s]", inet_ntoa(client->addr.sin_addr));
+        perror("Failed to send TWAMP-Test packet");
     }
-    memset(client, 0, sizeof(struct client_info));
-    client->status = kOffline;
-}
-
-static int find_empty_client(struct client_info *clients, int max_clients)
-{
-    int i;
-    for (i = 0; i < max_clients; i++)
-        if (clients[i].status == kOffline)
-            return i;
-    return -1;
+    return rv;
 }
 
 int main(int argc, char *argv[])
@@ -284,7 +352,6 @@ int main(int argc, char *argv[])
 
     /* Obtain start server time in TWAMP format */
     TWAMPTimestamp StartTime = get_timestamp();
-    int used_sockets = 0;
     int listenfd;
 
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -293,7 +360,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    /* Set Server address */
+    /* Set Server address and bind on the TWAMP port */
     struct sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
@@ -306,12 +373,12 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* Start listening on the TWAMP port for new TWAMP-Control connections */
     if (listen(listenfd, MAX_CLIENTS)) {
         perror("Error on listen");
         exit(EXIT_FAILURE);
     }
 
-    fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET(listenfd, &read_fds);
     fd_max = listenfd;
@@ -334,14 +401,18 @@ int main(int argc, char *argv[])
             exit(EXIT_FAILURE);
         }
 
+        /* If an event happened on the listenfd, then a new TWAMP-Control
+         * connection is received */
         if (FD_ISSET(listenfd, &tmp_fds)) {
             uint32_t client_len = sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
                                     (struct sockaddr *)&client_addr,
                                     &client_len)) < 0) {
-                perror("ERROR in accept");
+                perror("Error in accept");
             } else {
+                /* Add a new client if there are any slots available */
                 int pos = find_empty_client(clients, MAX_CLIENTS);
+                uint8_t mode_mask = 0;
 
                 if (pos != -1) {
                     clients[pos].status = kConnected;
@@ -352,84 +423,66 @@ int main(int argc, char *argv[])
                     FD_SET(newsockfd, &read_fds);
                     if (newsockfd > fd_max)
                         fd_max = newsockfd;
-                } else {
-                    ;           // TODO send NAK
+                    mode_mask = 0xFF;
                 }
-
-                rv = send_greeting(&clients[pos]);
-                if (rv <= 0) {
-                    clients[pos].status = kOffline;
-                    cleanup_client(&clients[pos], &read_fds, &used_sockets);
-                }
-
+                rv = send_greeting(mode_mask, &clients[pos]);
             }
         }
 
+        /* Receives other packets from the established TWAMP-Control sessions */
         uint8_t buffer[4096];
         int i, j;
         for (i = 0; i < MAX_CLIENTS; i++)
+            /* It can only receive TWAMP-Control messages from Online clients */
             if (clients[i].status != kOffline)
                 if (FD_ISSET(clients[i].socket, &tmp_fds)) {
                     switch (clients[i].status) {
                     case kConnected:
+                        /* If a TCP session has been established and a
+                         * ServerGreeting has been sent, wait for the
+                         * SetUpResponse and finish the TWAMP-Control setup */
                         rv = receive_greet_response(&clients[i]);
-
-                        if (rv <= 0) {
-                            cleanup_client(&clients[i], &read_fds,
-                                           &used_sockets);
-                            break;
+                        if (rv > 0) {
+                            rv = send_start_serv(&clients[i], StartTime);
                         }
-
-                        rv = send_start_serv(&clients[i], StartTime);
-
-                        if (rv <= 0)
-                            cleanup_client(&clients[i], &read_fds,
-                                           &used_sockets);
-                        else
-                            clients[i].status = kConfigured;
-
                         break;
                     case kConfigured:
+                        /* Reset the buffer to receive a new message */
                         memset(buffer, 0, 4096);
                         rv = recv(clients[i].socket, buffer, 4096, 0);
                         if (rv <= 0) {
-                            cleanup_client(&clients[i], &read_fds,
-                                           &used_sockets);
+                            cleanup_client(&clients[i]);
                             break;
                         }
+                        /* Check the message received: It can only be
+                         * StartSessions or RequestTWSession */
                         switch (buffer[0]) {
                         case kStartSessions:
                             rv = receive_start_sessions(&clients[i],
-                                                        (StartSessions *)
-                                                        buffer, &read_fds);
-                            clients[i].status = kTesting;
+                                                        (StartSessions *)buffer);
                             break;
                         case kRequestTWSession:
                             rv = receive_request_session(&clients[i],
-                                                         (RequestSession *)
-                                                         buffer, &used_sockets);
+                                                         (RequestSession *)buffer);
                             break;
                         default:
                             break;
                         }
 
                         if (rv <= 0)
-                            cleanup_client(&clients[i], &read_fds,
-                                           &used_sockets);
-
+                            cleanup_client(&clients[i]);
                         break;
                     case kTesting:
+                        /* In this state can only receive a StopSessions msg */
                         memset(buffer, 0, 4096);
                         rv = recv(clients[i].socket, buffer, 4096, 0);
                         if (rv <= 0) {
-                            cleanup_client(&clients[i], &read_fds,
-                                           &used_sockets);
+                            cleanup_client(&clients[i]);
                             break;
                         }
                         if (buffer[0] == kStopSessions) {
                             rv = receive_stop_sessions(&clients[i],
-                                                       (StopSessions *) buffer,
-                                                       &read_fds);
+                                                       (StopSessions *) buffer);
                             // TODO: check rv?
                         }
                         break;
@@ -438,12 +491,12 @@ int main(int argc, char *argv[])
                     }
                 }
 
+        /* Check for TWAMP-Test packets */
         for (i = 0; i < MAX_CLIENTS; i++)
             if (clients[i].status == kTesting)
                 for (j = 0; j < clients[i].sess_no; i++)
                     if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
                         rv = receive_test_message(&clients[i], j);
-                        // TODO: check rv?
                     }
     }
 
