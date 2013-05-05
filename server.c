@@ -499,7 +499,7 @@ int main(int argc, char *argv[])
         /* Check for TWAMP-Test packets */
         for (i = 0; i < MAX_CLIENTS; i++)
             if (clients[i].status == kTesting)
-                for (j = 0; j < clients[i].sess_no; i++)
+                for (j = 0; j < clients[i].sess_no; j++)
                     if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
                         rv = receive_test_message(&clients[i], j);
                     }

@@ -344,7 +344,7 @@ int main(int argc, char *argv[])
             pack.error_estimate = 1;    // TODO:Multiplyer = 1.
             pack.sender_ttl = 255;
 
-            printf("Sending TWAMP-Test message %d for port %d...\n", j + 1, twamp_test[i].testport);
+            printf("Sending TWAMP-Test message %d for port %d...\n", j + 1, ntohs(twamp_test[i].port));
             serv_addr.sin_port = twamp_test[i].port;
             rv = sendto(twamp_test[i].testfd, &pack, sizeof(pack), 0,
                         (struct sockaddr *)&serv_addr, sizeof(serv_addr));
@@ -360,7 +360,7 @@ int main(int argc, char *argv[])
                 perror("Error receiving test reply");
                 continue;
             }
-            printf("Received TWAMP-Test message response %d for port %d.\n", j + 1, twamp_test[i].testport);
+            printf("Received TWAMP-Test message response %d for port %d.\n", j + 1, ntohs(twamp_test[i].port));
             /* TODO: do something with these timestamps */
         }
     }
