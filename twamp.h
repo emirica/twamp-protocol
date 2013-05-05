@@ -221,6 +221,8 @@ void timestamp_to_timeval(TWAMPTimestamp * ts, struct timeval *tv);
 
 TWAMPTimestamp get_timestamp();
 
-void print_metrics(ReflectorUPacket);
+int get_actual_shutdown(struct timeval tv, struct timeval ts, TWAMPTimestamp);
+
+void print_metrics(int j, int port, ReflectorUPacket);
 
 #endif                          // _TWAMP_H__

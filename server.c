@@ -41,6 +41,7 @@ struct client_info {
     int socket;
     struct sockaddr_in addr;
     int sess_no;
+    struct timeval shutdown_time;
     struct active_session sessions[MAX_SESSIONS_PER_CLIENT];
 };
 
@@ -239,8 +240,9 @@ static int receive_start_sessions(struct client_info *client,
 static int receive_stop_sessions(struct client_info *client,
                                  StopSessions * req)
 {
-    /* TODO: timeout */
-    client->status = kConfigured;
+    /* If a StopSessions message was received, it can still receive Test packets
+     * until the timeout has expired */
+    gettimeofday(&client->shutdown_time, NULL);
     return 0;
 }
 
@@ -508,12 +510,33 @@ int main(int argc, char *argv[])
                 }
 
         /* Check for TWAMP-Test packets */
-        for (i = 0; i < MAX_CLIENTS; i++)
-            if (clients[i].status == kTesting)
-                for (j = 0; j < clients[i].sess_no; j++)
-                    if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
-                        rv = receive_test_message(&clients[i], j);
+        for (i = 0; i < MAX_CLIENTS; i++) {
+            struct timeval current;
+            gettimeofday(&current, NULL);
+
+            if (clients[i].status == kTesting) {
+                uint8_t has_active_test_sessions = 0;
+                for (j = 0; j < clients[i].sess_no; j++) {
+                    rv = get_actual_shutdown(current, clients[i].shutdown_time, clients[i].sessions[j].req.Timeout);
+                    if (rv > 0) {
+                        has_active_test_sessions = 1;
+                        if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
+                            rv = receive_test_message(&clients[i], j);
+                        }
+                    } else {
+                        FD_CLR(clients[i].sessions[j].socket, &read_fds);
+                        close(clients[i].sessions[j].socket);
+                        used_sockets--;
+                        clients[i].sessions[j].socket = -1;
                     }
+                }
+                if (!has_active_test_sessions) {
+                    memset(&clients[i].shutdown_time, 0, sizeof(clients[i].shutdown_time));
+                    clients[i].sess_no = 0;
+                    clients[i].status = kConfigured;
+                }
+            }
+        }
     }
 
     return 0;
