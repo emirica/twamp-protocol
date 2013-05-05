@@ -12,7 +12,7 @@ server:
 	$(CC) -o $(PROGRAM1) $(SRC1) $(SRCS) $(CCFLAGS)
 
 client:
-	$(CC) -o $(PROGRAM2) $(SRC2) $(SRCS) $(CCFLAGS)	
+	$(CC) -o $(PROGRAM2) $(SRC2) $(SRCS) $(CCFLAGS)
 
 setcap:
 	sudo setcap 'cap_net_bind_service=+ep' ./server
@@ -24,7 +24,7 @@ runclient:
 	./client localhost
 
 indent:
-	indent -linux -i4 -ts4 *.c *.h
+	indent -linux -i4 -ts4 -nut *.c *.h
 
 .PHONY: clean server client build
 clean:

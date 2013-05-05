@@ -17,26 +17,26 @@
 
 void timeval_to_timestamp(struct timeval *tv, TWAMPTimestamp * ts)
 {
-	if (!tv || !ts)
-		return;
-	ts->integer = htonl(tv->tv_sec);
-	ts->fractional = htonl(tv->tv_usec);
+    if (!tv || !ts)
+        return;
+    ts->integer = htonl(tv->tv_sec);
+    ts->fractional = htonl(tv->tv_usec);
 }
 
 void timestamp_to_timeval(TWAMPTimestamp * ts, struct timeval *tv)
 {
-	if (!tv || !ts)
-		return;
+    if (!tv || !ts)
+        return;
 
-	tv->tv_sec = ntohl(ts->integer);
-	tv->tv_usec = ntohl(ts->fractional);
+    tv->tv_sec = ntohl(ts->integer);
+    tv->tv_usec = ntohl(ts->fractional);
 }
 
 TWAMPTimestamp get_timestamp()
 {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	TWAMPTimestamp ts;
-	timeval_to_timestamp(&tv, &ts);
-	return ts;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    TWAMPTimestamp ts;
+    timeval_to_timestamp(&tv, &ts);
+    return ts;
 }
