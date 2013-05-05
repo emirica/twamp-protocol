@@ -29,6 +29,7 @@
 
 #define REFWAIT 900             /* seconds */
 #define SERVER_PORT 862
+#define CHECK_TIMES 100
 
 enum CommandNumber {
     kReserved0,
@@ -97,6 +98,7 @@ typedef struct server_start {
     uint8_t MBZ2[8];
 } ServerStart;
 
+/* The Control-Client sends a RequestSession packet for each TWAMP-Test session */
 typedef struct request_session {
     uint8_t Type;               /* 5 / CommandNumber */
     uint8_t IPVN;               /* MBZ | IPVN */
@@ -119,6 +121,7 @@ typedef struct request_session {
     uint8_t HMAC[16];
 } RequestSession;
 
+/* The Server's response to the RequestSession packet */
 typedef struct accept_session_packet {
     uint8_t Accept;             /* 3 if not supported */
     uint8_t MBZ1;
@@ -128,20 +131,23 @@ typedef struct accept_session_packet {
     uint8_t HMAC[16];
 } AcceptSession;
 
+/* The Control-Client sends a StartSessions message to start all accepted
+ * TWAMP-Test sessions */
 typedef struct start_message1 {
     uint8_t Type;               /* 2 */
     uint8_t MBZ[15];
     uint8_t HMAC[16];
 } StartSessions;
 
+/* When it receives a StartSessions, the Server responds with a StartACK */
 typedef struct start_ack {
     uint8_t Accept;
     uint8_t MBZ[15];
     uint8_t HMAC[16];
 } StartACK;
 
-/// Stop Sessions
-
+/* The Control-Client sends a StopSessions message to stop all active
+ * TWAMP-Test sessions */
 typedef struct twamp_stop {
     uint8_t Type;               /* 3 */
     uint8_t Accept;
@@ -179,40 +185,42 @@ typedef struct reflector_unauth_packet {
     uint8_t sender_ttl;
 } ReflectorUPacket;
 
-// struct auth_packet {
-//  uint32_t seq_number;
-//  uint8_t mbz1[12];
-//  TWAMPTimestamp time;
-//  uint16_t error_estimate;
-//  uint8_t mbz2[6];
-//  TWAMPTimestamp receive_time;
-//  uint8_t mbz3[8];
-//  uint32_t sender_seq_number;
-//  uint8_t mbz4[12];
-//  TWAMPTimestamp sender_time;
-//  uint16_t sender_error_estimate;
-//  uint8_t mbz5[6];
-//  uint8_t sender_ttl;
-//  uint8_t mbz6[15];
-//  uint8_t hmac[16];
-//  /* TODO: Padding */
-// };
+/* Session-Sender TWAMP-Test packet for Authenticated/Encrypted mode */
+typedef struct reflector_auth_packet {
+    uint32_t seq_number;
+    uint8_t mbz1[12];
+    TWAMPTimestamp time;
+    uint16_t error_estimate;
+    uint8_t mbz2[6];
+    TWAMPTimestamp receive_time;
+    uint8_t mbz3[8];
+    uint32_t sender_seq_number;
+    uint8_t mbz4[12];
+    TWAMPTimestamp sender_time;
+    uint16_t sender_error_estimate;
+    uint8_t mbz5[6];
+    uint8_t sender_ttl;
+    uint8_t mbz6[15];
+    uint8_t hmac[16];
+} ReflectorAPacket;
 
-
-// struct auth_test_packet {
-//  uint32_t seq_number;
-//  uint8_t mbz1[12];
-//  TWAMPTimestamp time;
-//  uint8_t error_estimate;
-//  uint8_t mbz2[6];
-//  uint8_t hmac[16];
-//  /* TODO: Padding 56 */
-// };
+/* Session-Reflector TWAMP-Test packet for Authenticated/Encrypted mode */
+typedef struct auth_test_packet {
+    uint32_t seq_number;
+    uint8_t mbz1[12];
+    TWAMPTimestamp time;
+    uint8_t error_estimate;
+    uint8_t mbz2[6];
+    uint8_t hmac[16];
+    uint8_t pacdding[57];
+} SenderAPacket;
 
 void timeval_to_timestamp(struct timeval *tv, TWAMPTimestamp * ts);
 
 void timestamp_to_timeval(TWAMPTimestamp * ts, struct timeval *tv);
 
 TWAMPTimestamp get_timestamp();
+
+void print_metrics(ReflectorUPacket);
 
 #endif                          // _TWAMP_H__

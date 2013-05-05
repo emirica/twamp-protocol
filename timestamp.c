@@ -40,3 +40,6 @@ TWAMPTimestamp get_timestamp()
     timeval_to_timestamp(&tv, &ts);
     return ts;
 }
+
+void print_metrics(ReflectorUPacket pack) {
+}

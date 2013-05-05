@@ -258,12 +258,17 @@ int main(int argc, char *argv[])
         local_addr.sin_addr.s_addr = INADDR_ANY;
 
         /* Try to bind on an available port */
-        while (1) {
+        int check_time = CHECK_TIMES;
+        while (check_time--) {
             twamp_test[active_sessions].testport = port_send + rand() % 1000;
             local_addr.sin_port = ntohs(twamp_test[active_sessions].testport);
             if (!bind(twamp_test[active_sessions].testfd, (struct sockaddr *)&local_addr,
                       sizeof(struct sockaddr)))
                 break;
+        }
+        if (check_time == 0) {
+            fprintf(stderr, "Couldn't find a port to bind to for session %d\n", i + 1);
+            continue;
         }
 
         printf("Sending RequestTWSession for port %d...\n", twamp_test[active_sessions].testport);
@@ -273,9 +278,9 @@ int main(int argc, char *argv[])
         req.IPVN = 4;
         req.SenderPort = ntohs(twamp_test[active_sessions].testport);
         req.ReceiverPort = ntohs(port_recv + rand() % 1000);
-        req.PaddingLength = 27;     // As defined in RFC 6038#4.2 // TODO: correct?
+        req.PaddingLength = 27;     // As defined in RFC 6038#4.2
         TWAMPTimestamp timestamp = get_timestamp();
-        timestamp.integer = htonl(ntohl(timestamp.integer) + 10);   // TODO: 10 seconds?
+        timestamp.integer = htonl(ntohl(timestamp.integer) + 10);   // 10 seconds for start time
         req.StartTime = timestamp;
         struct timeval timeout;
         timeout.tv_sec = TIMEOUT;
@@ -361,7 +366,8 @@ int main(int argc, char *argv[])
                 continue;
             }
             printf("Received TWAMP-Test message response %d for port %d.\n", j + 1, ntohs(twamp_test[i].port));
-            /* TODO: do something with these timestamps */
+            /* Print the round-trip metrics */
+            print_metrics(pack_reflect);
         }
     }
 

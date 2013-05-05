@@ -265,20 +265,26 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
         local_addr.sin_addr.s_addr = INADDR_ANY;
         local_addr.sin_port = req->ReceiverPort;
 
-        // TODO: check N times then send failure
-        while (bind(testfd, (struct sockaddr *)&local_addr,
-                sizeof(struct sockaddr)) < 0)
+        int check_time = CHECK_TIMES;
+        while (check_time-- && bind(testfd, (struct sockaddr *)&local_addr,
+                                    sizeof(struct sockaddr)) < 0)
             local_addr.sin_port = port_min + rand() % 1000;
 
-        req->ReceiverPort = local_addr.sin_port;
-        acc.Accept = kOK;
-        acc.Port = req->ReceiverPort;
+        if (check_time > 0) {
+            req->ReceiverPort = local_addr.sin_port;
+            acc.Accept = kOK;
+            acc.Port = req->ReceiverPort;
+            client->sessions[client->sess_no].socket = testfd;
+            client->sessions[client->sess_no].req = *req;
+            client->sess_no++;
+        } else {
+            acc.Accept = kTemporaryResourceLimitation;
+            acc.Port = 0;
+        }
 
-        client->sessions[client->sess_no].socket = testfd;
-        client->sessions[client->sess_no].req = *req;
-        client->sess_no++;
     } else {
         acc.Accept = kTemporaryResourceLimitation;
+        acc.Port = 0;
     }
 
     int rv = send(client->socket, &acc, sizeof(acc), 0);
@@ -494,7 +500,6 @@ int main(int argc, char *argv[])
                         if (buffer[0] == kStopSessions) {
                             rv = receive_stop_sessions(&clients[i],
                                                        (StopSessions *) buffer);
-                            // TODO: check rv?
                         }
                         break;
                     default:
