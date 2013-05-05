@@ -157,7 +157,16 @@ typedef struct twamp_stop {
 /*                                       */
 /*****************************************/
 
-typedef struct unauth_packet {
+/* Session-Sender TWAMP-Test packet for Unauthenticated mode */
+typedef struct test_packet {
+    uint32_t seq_number;
+    TWAMPTimestamp time;
+    uint8_t error_estimate;
+    uint8_t padding[28];
+} SenderUPacket;
+
+/* Session-Reflector TWAMP-Test packet for Unauthenticated mode */
+typedef struct reflector_unauth_packet {
     uint32_t seq_number;
     TWAMPTimestamp time;
     uint16_t error_estimate;
@@ -168,8 +177,7 @@ typedef struct unauth_packet {
     uint16_t sender_error_estimate;
     uint8_t mbz2[2];
     uint8_t sender_ttl;
-    /* TODO: Padding */
-} UPacket;
+} ReflectorUPacket;
 
 // struct auth_packet {
 //  uint32_t seq_number;
@@ -190,12 +198,6 @@ typedef struct unauth_packet {
 //  /* TODO: Padding */
 // };
 
-// struct test_packet {
-//  uint32_t seq_number;
-//  TWAMPTimestamp time;
-//  uint8_t error_estimate;
-//  /* TODO: Padding 27 */
-// };
 
 // struct auth_test_packet {
 //  uint32_t seq_number;

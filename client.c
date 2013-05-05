@@ -336,13 +336,11 @@ int main(int argc, char *argv[])
     for (i = 0; i < active_sessions; i++) {
         int j;
         for (j = 0; j < test_sessions_msg; j++) {
-            UPacket pack;
+            SenderUPacket pack;
             memset(&pack, 0, sizeof(pack));
-
             pack.seq_number = i * test_sessions_msg + j;
             pack.time = get_timestamp();
-            pack.error_estimate = 1;    // TODO:Multiplyer = 1.
-            pack.sender_ttl = 255;
+            pack.error_estimate = 1;    // Multiplyer = 1.
 
             printf("Sending TWAMP-Test message %d for port %d...\n", j + 1, ntohs(twamp_test[i].port));
             serv_addr.sin_port = twamp_test[i].port;
@@ -354,7 +352,9 @@ int main(int argc, char *argv[])
             }
 
             socklen_t len = sizeof(serv_addr);
-            rv = recvfrom(twamp_test[i].testfd, &pack, sizeof(pack), 0,
+            ReflectorUPacket pack_reflect;
+            memset(&pack_reflect, 0, sizeof(pack_reflect));
+            rv = recvfrom(twamp_test[i].testfd, &pack_reflect, sizeof(pack_reflect), 0,
                           (struct sockaddr *)&serv_addr, &len);
             if (rv <= 0) {
                 perror("Error receiving test reply");
