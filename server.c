@@ -56,7 +56,7 @@ static void usage(char *progname)
     fprintf(stderr,
             "	-a authmode		Default is Unauthenticated\n"
             "	-p port_min		Port range for Test receivers based on port_min\n"
-            "	-h				Print this help message and exits\n");
+            "	-h         		Print this help message and exits\n");
     return;
 }
 
@@ -81,8 +81,10 @@ static int parse_options(char *progname, int argc, char *argv[])
             port_max = port_min + 1000;
             break;
         case 'h':
-        default:
             usage(progname);
+            break;
+        default:
+            return 1;
         }
     }
 
@@ -301,8 +303,7 @@ int main(int argc, char *argv[])
     serv_addr.sin_port = htons(SERVER_PORT);
 
     used_sockets++;
-    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) <
-        0) {
+    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) < 0) {
         perror("Error on binding");
         exit(EXIT_FAILURE);
     }
