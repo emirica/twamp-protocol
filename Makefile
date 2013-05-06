@@ -5,6 +5,7 @@ PROGRAM1 = server
 SRC2 = client.c
 PROGRAM2 = client
 SRCS = timestamp.c
+
 build: server client
 
 server:
@@ -13,6 +14,14 @@ server:
 client:
 	$(CC) -o $(PROGRAM2) $(SRC2) $(SRCS) $(CCFLAGS)	
 
+setcap:
+	sudo setcap 'cap_net_bind_service=+ep' ./server
+
+runserver:
+	./server
+
+runclient:
+	./client localhost
 
 indent:
 	indent -linux -i4 -ts4 *.c *.h
