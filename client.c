@@ -40,6 +40,26 @@ int send_start_sessions(int socket)
 	return send(socket, &start, sizeof(start), 0);
 }
 
+char * get_accept_str(int code)
+{
+	switch (code) {
+		case kOK:
+			return "OK.";
+		case kFailure:
+			return "Failure, reason unspecified.";
+		case kInternalError:
+			return "Internal error.";
+		case kAspectNotSupported:
+			return "Some aspect of request is not supported.";
+		case kPermanentResourceLimitation:
+			return "Cannot perform request due to permanent resource limitations.";
+		case kTemporaryResourceLimitation:
+			return "Cannot perform request due to temporary resource limitations.";
+		default:
+			return "Undefined failure";
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	if (argc < 2)
@@ -49,13 +69,15 @@ int main(int argc, char *argv[])
 	struct hostent *server;
 
 	int servfd = socket(AF_INET, SOCK_STREAM, 0);
-	if (servfd < 0)
+	if (servfd < 0) {
 		perror("ERROR opening socket");
+		exit(EXIT_FAILURE);
+	}
 
 	server = gethostbyname(argv[1]);
 	if (server == NULL) {
 		perror("ERROR, no such host");
-		exit(0);
+		exit(EXIT_FAILURE);
 	}
 
 	memset(&serv_addr, 0, sizeof(serv_addr));
@@ -63,18 +85,23 @@ int main(int argc, char *argv[])
 	memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
 	serv_addr.sin_port = htons(SERVER_PORT);
 
-	if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+	printf("Connecting to %s...\n", argv[1]);
+	if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
 		perror("ERROR connecting");
+		exit(EXIT_FAILURE);
+	}
 
 	ServerGreeting greet;
 	int rv = recv(servfd, &greet, sizeof(greet), 0);
-	if (rv < 0)
-		perror("ERROR recv");
+	if (rv <= 0) {
+		perror("ERROR receiving Server Greeting");
+		exit(EXIT_FAILURE);
+	}
 
 	if (greet.Modes == 0) {
 		close(servfd);
-		printf("The server does not support any usable Mode\n");
-		return 1;
+		fprintf(stderr, "The server does not support any usable Mode\n");
+		exit(EXIT_FAILURE);
 	}
 
 	printf("Mode: %d\n", greet.Modes);
@@ -89,7 +116,12 @@ int main(int argc, char *argv[])
 	ServerStart start;
 	rv = recv(servfd, &start, sizeof(start), 0);
 	if (rv <= 0) {
-		// CLOSE SOCKET/ RETURN
+		perror("ERROR Receiving Server Start");
+		exit(EXIT_FAILURE);
+	}
+
+	if (start.Accept != kOK) {
+		fprintf(stderr, "Received \n");
 	}
 
 	if (start.Accept == 0) {
