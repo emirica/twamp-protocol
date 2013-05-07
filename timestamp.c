@@ -60,6 +60,7 @@ int get_actual_shutdown(struct timeval tv, struct timeval ts, TWAMPTimestamp t)
     uint64_t shutdown = ts.tv_sec * 1000000 + ts.tv_usec;
     uint64_t timeout = get_usec(t);
 
+    /* This should be ok, as no difference is computed */
     if (current > shutdown + timeout)
         return 1;
     return 0;
@@ -94,13 +95,13 @@ void print_metrics(int j, int port, ReflectorUPacket pack) {
     /* Print different metrics */
 
     /* Compute round-trip */
-    fprintf(stderr, "Round-trip time for TWAMP-Test packet %d for port %d is %llu [usec]\n",
+    fprintf(stderr, "Round-trip time for TWAMP-Test packet %d for port %hd is %" PRIu64 " [usec]\n",
             j, port, get_time_difference(&recv_resp_time, &send_time));
     fprintf(stderr, "Receive time - Send time for TWAMP-Test"
-            " packet %d for port %d is %llu [usec]\n", j, port,
+            " packet %d for port %d is %" PRIu64 " [usec]\n", j, port,
             get_time_difference(&recv_time, &send_time));
     fprintf(stderr, "Reflect time - Send time for TWAMP-Test"
-            " packet %d for port %d is %llu [usec]\n", j, port,
+            " packet %d for port %d is %" PRIu64 " [usec]\n", j, port,
             get_time_difference(&reflect_time, &send_time));
 
 }
