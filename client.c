@@ -89,9 +89,15 @@ static int parse_options(struct hostent **server, char *progname, int argc, char
             break;
         case 'n':
             test_sessions_no = atoi(optarg);
+            /* Test sessions number must be a valid one */
+            if (test_sessions_no < 0)
+                return 1;
             break;
         case 'm':
             test_sessions_msg = atoi(optarg);
+            /* Test messages per session must be a valid one */
+            if (test_sessions_msg < 0)
+                return 1;
             break;
         case 'h':
         default:
@@ -145,6 +151,7 @@ static char *get_accept_str(int code)
 int main(int argc, char *argv[])
 {
     char *progname = NULL;
+    srand(time(NULL));
     progname = (progname = strrchr(argv[0], '/')) ? progname + 1: *argv;
 
     struct sockaddr_in serv_addr;
