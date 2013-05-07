@@ -69,7 +69,7 @@ static void usage(char *progname)
 static int parse_options(char *progname, int argc, char *argv[])
 {
     int opt;
-    if (argc < 1 && argc > 3) {
+    if (argc < 1 || argc > 3) {
         fprintf(stderr, "Wrong number of arguments for %s\n", progname);
         return 1;
     }
@@ -84,6 +84,10 @@ static int parse_options(char *progname, int argc, char *argv[])
         case 'p':
             /* Set port min */
             port_min = atoi(optarg);
+            /* We don't allow ports less than 1024 (or negative) or greater than
+             * 65000 because we choose a port random with rand() % 1000 */
+            if (port_min < 1024 || port_min > 65000)
+                port_min = PORTBASE;
             port_max = port_min + 1000;
             break;
         case 'h':
@@ -106,11 +110,14 @@ static void cleanup_client(struct client_info *client)
     close(client->socket);
     used_sockets--;
     int i;
-    for (i = 0; i < client->sess_no; i++) {
-        FD_CLR(client->sessions[i].socket, &read_fds);
-        close(client->sessions[i].socket);
-        used_sockets--;
-    }
+    for (i = 0; i < client->sess_no; i++)
+        /* If socket is -1 the session has already been closed */
+        if (client->sessions[i].socket > 0) {
+            FD_CLR(client->sessions[i].socket, &read_fds);
+            close(client->sessions[i].socket);
+            client->sessions[i].socket = -1;
+            used_sockets--;
+        }
     memset(client, 0, sizeof(struct client_info));
     client->status = kOffline;
 }
@@ -142,7 +149,7 @@ static int send_greeting(uint8_t mode_mask, struct client_info *client)
         greet.Challenge[i] = rand() % 16;
     for (i = 0; i < 16; i++)
         greet.Salt[i] = rand() % 16;
-    greet.Count = (1 << 12);    // TODO: should it be more?
+    greet.Count = (1 << 12);
 
     int rv = send(socket, &greet, sizeof(greet), 0);
     if (rv < 0) {
@@ -164,7 +171,7 @@ static int receive_greet_response(struct client_info *client)
     int socket = client->socket;
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
-    int rv = recv(socket, &resp, sizeof(resp) * 2, 0);
+    int rv = recv(socket, &resp, sizeof(resp), 0);
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to receive SetUpResponse");
@@ -225,6 +232,7 @@ static int receive_start_sessions(struct client_info *client,
     if (rv <= 0)
         return rv;
 
+    /* Now it can receive packets on the TWAMP-Test sockets */
     for (i = 0; i < client->sess_no; i++) {
         FD_SET(client->sessions[i].socket, &read_fds);
         if (fd_max < client->sessions[i].socket)
@@ -517,7 +525,8 @@ int main(int argc, char *argv[])
             if (clients[i].status == kTesting) {
                 uint8_t has_active_test_sessions = 0;
                 for (j = 0; j < clients[i].sess_no; j++) {
-                    rv = get_actual_shutdown(current, clients[i].shutdown_time, clients[i].sessions[j].req.Timeout);
+                    rv = get_actual_shutdown(current, clients[i].shutdown_time,
+                                             clients[i].sessions[j].req.Timeout);
                     if (rv > 0) {
                         has_active_test_sessions = 1;
                         if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
