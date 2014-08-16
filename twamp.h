@@ -228,6 +228,6 @@ TWAMPTimestamp get_timestamp();
 
 int get_actual_shutdown(const struct timeval *tv, const struct timeval *ts, const TWAMPTimestamp *t);
 
-void print_metrics(int j, int port, const ReflectorUPacket *pack);
+void print_metrics(uint32_t j, uint16_t port, const ReflectorUPacket *pack);
 
 #endif                          // _TWAMP_H__

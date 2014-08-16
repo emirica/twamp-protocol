@@ -37,9 +37,10 @@ struct twamp_test_info {
 static enum Mode authmode = kModeUnauthenticated;
 static int port_send = PORTBASE_SEND;
 static int port_recv = PORTBASE_RECV;
-static int test_sessions_no = TEST_SESSIONS;
-static int test_sessions_msg = TEST_MESSAGES;
-static int active_sessions = 0;
+
+static uint16_t test_sessions_no = TEST_SESSIONS;
+static uint32_t test_sessions_msg = TEST_MESSAGES;
+static uint16_t active_sessions = 0;
 
 /* The function that prints the help for this program */
 static void usage(char *progname)
@@ -78,13 +79,13 @@ static int parse_options(struct hostent **server, char *progname, int argc, char
         case 'p':
             port_send = atoi(optarg);
             /* The port must be a valid one */
-            if ((port_send > 0 && port_send < 1024) || port_send > 65536 || port_send < 0)
+            if (port_send < 1024 || port_send > 65535)
                 return 1;
             break;
         case 'P':
             port_recv = atoi(optarg);
             /* The port must be a valid one */
-            if ((port_recv > 0 && port_recv < 1024) || port_recv > 65536 || port_recv < 0)
+            if (port_recv < 1024 || port_recv > 65535)
                 return 1;
             break;
         case 'n':
@@ -248,7 +249,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    int i;
+    uint16_t i;
     /* Set TWAMP-Test sessions */
     for (i = 0; i < test_sessions_no; i++) {
 
@@ -346,13 +347,13 @@ int main(int argc, char *argv[])
     /* For each accepted TWAMP-Test session send test_sessions_msg
      * TWAMP-Test packets */
     for (i = 0; i < active_sessions; i++) {
-        int j;
+        uint32_t j;
         for (j = 0; j < test_sessions_msg; j++) {
             SenderUPacket pack;
             memset(&pack, 0, sizeof(pack));
-            pack.seq_number = i * test_sessions_msg + j;
+            pack.seq_number = htonl(i * test_sessions_msg + j);
             pack.time = get_timestamp();
-            pack.error_estimate = 1;    // Multiplyer = 1.
+            pack.error_estimate = 0x100;    // Multiplier = 1.
 
             printf("Sending TWAMP-Test message %d for port %d...\n", j + 1, ntohs(twamp_test[i].port));
             serv_addr.sin_port = twamp_test[i].port;

@@ -94,7 +94,7 @@ static uint64_t get_time_difference(const TWAMPTimestamp *tv, const TWAMPTimesta
     return tv_usec - ts_usec;
 }
 
-void print_metrics(int j, int port, const ReflectorUPacket *pack) {
+void print_metrics(uint32_t j, uint16_t port, const ReflectorUPacket *pack) {
 
     /* Get Time of the received TWAMP-Test response message */
     TWAMPTimestamp recv_resp_time = get_timestamp();
