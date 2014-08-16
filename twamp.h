@@ -163,12 +163,14 @@ typedef struct twamp_stop {
 /*                                       */
 /*****************************************/
 
+#define TST_PKT_SIZE 512
+
 /* Session-Sender TWAMP-Test packet for Unauthenticated mode */
 typedef struct test_packet {
     uint32_t seq_number;
     TWAMPTimestamp time;
-    uint8_t error_estimate;
-    uint8_t padding[28];
+    uint16_t error_estimate;
+    uint8_t padding[TST_PKT_SIZE-14];
 } SenderUPacket;
 
 /* Session-Reflector TWAMP-Test packet for Unauthenticated mode */
@@ -183,6 +185,7 @@ typedef struct reflector_unauth_packet {
     uint16_t sender_error_estimate;
     uint8_t mbz2[2];
     uint8_t sender_ttl;
+    uint8_t padding[TST_PKT_SIZE-41];
 } ReflectorUPacket;
 
 /* Session-Sender TWAMP-Test packet for Authenticated/Encrypted mode */
@@ -212,7 +215,7 @@ typedef struct auth_test_packet {
     uint8_t error_estimate;
     uint8_t mbz2[6];
     uint8_t hmac[16];
-    uint8_t pacdding[57];
+    uint8_t padding[57];
 } SenderAPacket;
 
 void timeval_to_timestamp(struct timeval *tv, TWAMPTimestamp * ts);
