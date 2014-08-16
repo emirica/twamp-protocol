@@ -374,7 +374,7 @@ int main(int argc, char *argv[])
             }
             printf("Received TWAMP-Test message response %d for port %d.\n", j + 1, ntohs(twamp_test[i].port));
             /* Print the round-trip metrics */
-            print_metrics(j + 1, ntohs(twamp_test[i].port), pack_reflect);
+            print_metrics(j + 1, ntohs(twamp_test[i].port), &pack_reflect);
         }
     }
 

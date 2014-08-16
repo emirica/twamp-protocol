@@ -57,6 +57,8 @@ enum AcceptCode {
     kTemporaryResourceLimitation
 };
 
+/* TWAMP timestamp is NTP time (RFC1305).
+ * Should be in network byte order!      */
 typedef struct twamp_timestamp {
     uint32_t integer;
     uint32_t fractional;
@@ -218,14 +220,14 @@ typedef struct auth_test_packet {
     uint8_t padding[57];
 } SenderAPacket;
 
-void timeval_to_timestamp(struct timeval *tv, TWAMPTimestamp * ts);
+void timeval_to_timestamp(const struct timeval *tv, TWAMPTimestamp *ts);
 
-void timestamp_to_timeval(TWAMPTimestamp * ts, struct timeval *tv);
+void timestamp_to_timeval(const TWAMPTimestamp *ts, struct timeval *tv);
 
 TWAMPTimestamp get_timestamp();
 
-int get_actual_shutdown(struct timeval tv, struct timeval ts, TWAMPTimestamp);
+int get_actual_shutdown(const struct timeval *tv, const struct timeval *ts, const TWAMPTimestamp *t);
 
-void print_metrics(int j, int port, ReflectorUPacket);
+void print_metrics(int j, int port, const ReflectorUPacket *pack);
 
 #endif                          // _TWAMP_H__

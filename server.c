@@ -433,8 +433,8 @@ int main(int argc, char *argv[])
         if (FD_ISSET(listenfd, &tmp_fds)) {
             uint32_t client_len = sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
-                                    (struct sockaddr *)&client_addr,
-                                    &client_len)) < 0) {
+                                    (struct sockaddr *)&client_addr, 
+                                    &client_len))) {
                 perror("Error in accept");
             } else {
                 /* Add a new client if there are any slots available */
@@ -525,8 +525,8 @@ int main(int argc, char *argv[])
             if (clients[i].status == kTesting) {
                 uint8_t has_active_test_sessions = 0;
                 for (j = 0; j < clients[i].sess_no; j++) {
-                    rv = get_actual_shutdown(current, clients[i].shutdown_time,
-                                             clients[i].sessions[j].req.Timeout);
+                    rv = get_actual_shutdown(&current, &clients[i].shutdown_time,
+                                             &clients[i].sessions[j].req.Timeout);
                     if (rv > 0) {
                         has_active_test_sessions = 1;
                         if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
