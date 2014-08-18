@@ -57,6 +57,8 @@ enum AcceptCode {
     kTemporaryResourceLimitation
 };
 
+/* TWAMP timestamp is NTP time (RFC1305).
+ * Should be in network byte order!      */
 typedef struct twamp_timestamp {
     uint32_t integer;
     uint32_t fractional;
@@ -163,12 +165,14 @@ typedef struct twamp_stop {
 /*                                       */
 /*****************************************/
 
+#define TST_PKT_SIZE 512
+
 /* Session-Sender TWAMP-Test packet for Unauthenticated mode */
 typedef struct test_packet {
     uint32_t seq_number;
     TWAMPTimestamp time;
-    uint8_t error_estimate;
-    uint8_t padding[28];
+    uint16_t error_estimate;
+    uint8_t padding[TST_PKT_SIZE-14];
 } SenderUPacket;
 
 /* Session-Reflector TWAMP-Test packet for Unauthenticated mode */
@@ -183,6 +187,7 @@ typedef struct reflector_unauth_packet {
     uint16_t sender_error_estimate;
     uint8_t mbz2[2];
     uint8_t sender_ttl;
+    uint8_t padding[TST_PKT_SIZE-41];
 } ReflectorUPacket;
 
 /* Session-Sender TWAMP-Test packet for Authenticated/Encrypted mode */
@@ -212,17 +217,17 @@ typedef struct auth_test_packet {
     uint8_t error_estimate;
     uint8_t mbz2[6];
     uint8_t hmac[16];
-    uint8_t pacdding[57];
+    uint8_t padding[57];
 } SenderAPacket;
 
-void timeval_to_timestamp(struct timeval *tv, TWAMPTimestamp * ts);
+void timeval_to_timestamp(const struct timeval *tv, TWAMPTimestamp *ts);
 
-void timestamp_to_timeval(TWAMPTimestamp * ts, struct timeval *tv);
+void timestamp_to_timeval(const TWAMPTimestamp *ts, struct timeval *tv);
 
 TWAMPTimestamp get_timestamp();
 
-int get_actual_shutdown(struct timeval tv, struct timeval ts, TWAMPTimestamp);
+int get_actual_shutdown(const struct timeval *tv, const struct timeval *ts, const TWAMPTimestamp *t);
 
-void print_metrics(int j, int port, ReflectorUPacket);
+void print_metrics(uint32_t j, uint16_t port, const ReflectorUPacket *pack);
 
 #endif                          // _TWAMP_H__

@@ -86,7 +86,7 @@ static int parse_options(char *progname, int argc, char *argv[])
             port_min = atoi(optarg);
             /* We don't allow ports less than 1024 (or negative) or greater than
              * 65000 because we choose a port random with rand() % 1000 */
-            if (port_min < 1024 || port_min > 65000)
+            if (port_min < 1024 || port_min > (65535 - 1000))
                 port_min = PORTBASE;
             port_max = port_min + 1000;
             break;
@@ -327,30 +327,47 @@ static int receive_test_message(struct client_info *client, int session_index)
 
     ReflectorUPacket pack_reflect;
     memset(&pack_reflect, 0, sizeof(pack_reflect));
-    pack_reflect.receive_time = get_timestamp();
 
     SenderUPacket pack;
     memset(&pack, 0, sizeof(pack));
+
     int rv =
         recvfrom(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
                  (struct sockaddr*) &addr, &len);
+
+    pack_reflect.receive_time = get_timestamp();
+
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(addr.sin_addr));
         perror("Failed to receive TWAMP-Test packet");
         return rv;
+    } else if (rv < 14) {
+        fprintf(stderr, "[%s] ", inet_ntoa(addr.sin_addr));
+        perror("Short TWAMP-Test packet");
+        return rv;
     }
+
     printf("Received TWAMP-Test message from %s\n", inet_ntoa(addr.sin_addr));
-    pack_reflect.seq_number = seq_nr++;
-    pack_reflect.time = get_timestamp();
-    pack_reflect.error_estimate = 1;
+    pack_reflect.seq_number = htonl(seq_nr++);
+    pack_reflect.error_estimate = 0x100;  // Multiplier = 1
     pack_reflect.sender_seq_number = pack.seq_number;
     pack_reflect.sender_time = pack.time;
     pack_reflect.sender_error_estimate = pack.error_estimate;
     pack_reflect.sender_ttl = 255;      // Should be set by the Sender to 255
 
     addr.sin_port = client->sessions[session_index].req.SenderPort;
-    rv = sendto(client->sessions[session_index].socket, &pack_reflect, sizeof(pack_reflect), 0,
-                (struct sockaddr*) &addr, sizeof(addr));
+
+    pack_reflect.time = get_timestamp();
+
+    if (rv < 41) {
+        rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41, 0,
+                   (struct sockaddr*) &addr, sizeof(addr));
+    }
+    else {
+        rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv, 0,
+                   (struct sockaddr*) &addr, sizeof(addr));
+    }
+
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send TWAMP-Test packet");
@@ -433,8 +450,8 @@ int main(int argc, char *argv[])
         if (FD_ISSET(listenfd, &tmp_fds)) {
             uint32_t client_len = sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
-                                    (struct sockaddr *)&client_addr,
-                                    &client_len)) < 0) {
+                                    (struct sockaddr *)&client_addr, 
+                                    &client_len))) {
                 perror("Error in accept");
             } else {
                 /* Add a new client if there are any slots available */
@@ -525,8 +542,8 @@ int main(int argc, char *argv[])
             if (clients[i].status == kTesting) {
                 uint8_t has_active_test_sessions = 0;
                 for (j = 0; j < clients[i].sess_no; j++) {
-                    rv = get_actual_shutdown(current, clients[i].shutdown_time,
-                                             clients[i].sessions[j].req.Timeout);
+                    rv = get_actual_shutdown(&current, &clients[i].shutdown_time,
+                                             &clients[i].sessions[j].req.Timeout);
                     if (rv > 0) {
                         has_active_test_sessions = 1;
                         if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
