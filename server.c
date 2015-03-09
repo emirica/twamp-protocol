@@ -431,7 +431,7 @@ int main(int argc, char *argv[])
 
     memset(clients, 0, MAX_CLIENTS * sizeof(struct client_info));
 
-    unsigned int newsockfd;
+    int newsockfd;
     struct sockaddr_in client_addr;
     fd_set tmp_fds;
     FD_ZERO(&tmp_fds);
@@ -451,7 +451,7 @@ int main(int argc, char *argv[])
             uint32_t client_len = sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
                                     (struct sockaddr *)&client_addr, 
-                                    &client_len))) {
+                                    &client_len)) < 0) {
                 perror("Error in accept");
             } else {
                 /* Add a new client if there are any slots available */
