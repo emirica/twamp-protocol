@@ -3,11 +3,13 @@
  * Project: TWAMP Protocol
  * Class: OSS
  * Email: emma.mirica@cti.pub.ro
+ * Contributions: stephanDB
  *
  * Source: server.c
  * Note: contains the TWAMP server implementation
  *
  */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -16,8 +18,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #include <time.h>
-
 #include "twamp.h"
 
 #define MAX_CLIENTS 10
@@ -34,16 +36,27 @@ typedef enum {
 struct active_session {
     int socket;
     RequestSession req;
+    uint16_t server_oct;
+    uint32_t sid_addr;          /* in network order */
+    TWAMPTimestamp sid_time;    /* in network order */
+    uint32_t sid_rand;          /* in network order */
+    uint32_t seq_nb;
+    uint32_t snd_nb;
+    uint32_t fw_msg;
+    uint32_t fw_lst_msg;
 };
 
 struct client_info {
     ClientStatus status;
     int socket;
     struct sockaddr_in addr;
+    int mode;
     int sess_no;
     struct timeval shutdown_time;
     struct active_session sessions[MAX_SESSIONS_PER_CLIENT];
 };
+
+const uint8_t One = 1;
 
 static int fd_max = 0;
 static int port_min = PORTBASE;
@@ -51,17 +64,21 @@ static int port_max = PORTBASE + 1000;
 static enum Mode authmode = kModeUnauthenticated;
 static int used_sockets = 0;
 static fd_set read_fds;
+static uint16_t servo = 0;      /* Server Octets to be sent by sender */
+
+TWAMPTimestamp ZeroT = { 0, 0 };
 
 /* Prints the help of the TWAMP server */
 static void usage(char *progname)
 {
     fprintf(stderr, "Usage: %s [options]\n", progname);
-    fprintf(stderr, "\nWhere \"options\" are:\n\n");
+    fprintf(stderr, "\nWhere \"options\" are:\n");
 
     fprintf(stderr,
             "	-a authmode		Default is Unauthenticated\n"
-            "	-p port_min		Port range for Test receivers based on port_min\n"
-            "	-h         		Print this help message and exits\n");
+            "	-p port_min		Port range for Test receivers based on port_min (>1063)\n"
+            "	-o servo     	2 Octets to be reflected by Sender in Reflected Mode (<65536)\n"
+            "	-h         		Prints this help message and exits\n");
     return;
 }
 
@@ -69,17 +86,18 @@ static void usage(char *progname)
 static int parse_options(char *progname, int argc, char *argv[])
 {
     int opt;
-    if (argc < 1 || argc > 3) {
+    if (argc < 1 || argc > 5) {
         fprintf(stderr, "Wrong number of arguments for %s\n", progname);
         return 1;
     }
 
-    while ((opt = getopt(argc, argv, "a:p:h")) != -1) {
+    while ((opt = getopt(argc, argv, "a:p:o:h")) != -1) {
         switch (opt) {
         case 'a':
+            authmode = strtol(optarg, NULL, 10);
             /* For now only unauthenticated mode is supported */
-            /* TODO: set authentication mode to the one from cmd line */
-            authmode = kModeUnauthenticated;
+            if (authmode < 0 || authmode > 511)
+                return 1;
             break;
         case 'p':
             /* Set port min */
@@ -89,6 +107,12 @@ static int parse_options(char *progname, int argc, char *argv[])
             if (port_min < 1024 || port_min > (65535 - 1000))
                 port_min = PORTBASE;
             port_max = port_min + 1000;
+            break;
+        case 'o':
+            /* Server Octets */
+            servo = strtol(optarg, NULL, 10);
+            /* The octets value must be a valid one */
+            authmode = authmode | kModeReflectOctets;
             break;
         case 'h':
         default:
@@ -137,28 +161,31 @@ static int find_empty_client(struct client_info *clients, int max_clients)
 /* Sends a ServerGreeting message to the Control-Client after
  * the TCP connection has been established.
  */
-static int send_greeting(uint8_t mode_mask, struct client_info *client)
+static int send_greeting(uint16_t mode_mask, struct client_info *client)
 {
     int socket = client->socket;
     int i;
     ServerGreeting greet;
     memset(&greet, 0, sizeof(greet));
-    greet.Modes = authmode & mode_mask;
-
+    greet.Modes = htonl(client->mode & mode_mask);
     for (i = 0; i < 16; i++)
         greet.Challenge[i] = rand() % 16;
     for (i = 0; i < 16; i++)
         greet.Salt[i] = rand() % 16;
-    greet.Count = (1 << 12);
+    greet.Count = htonl(1 << 10);
 
     int rv = send(socket, &greet, sizeof(greet), 0);
     if (rv < 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send ServerGreeting message");
         cleanup_client(client);
+    } else if ((authmode & 0x000F) == 0) {
+        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        perror("Sent ServerGreeting message with Mode 0! Abort");
+        cleanup_client(client);
     } else {
-        printf("Sent ServerGreeting message to %s. Result %d\n",
-               inet_ntoa(client->addr.sin_addr), rv);
+        printf("Sent ServerGreeting message to %s\n",
+               inet_ntoa(client->addr.sin_addr));
     }
     return rv;
 }
@@ -172,13 +199,18 @@ static int receive_greet_response(struct client_info *client)
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
     int rv = recv(socket, &resp, sizeof(resp), 0);
-    if (rv <= 0) {
+    if (rv <= 32) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to receive SetUpResponse");
-        cleanup_client(client);
-    } else {
-        printf("Received SetUpResponse message from %s with mode %d. Result %d\n",
-               inet_ntoa(client->addr.sin_addr), resp.Mode, rv);
+        client->mode = ntohl(0);
+        } else {
+        fprintf(stderr, "Received SetUpResponse message from %s with mode %d\n",
+                inet_ntoa(client->addr.sin_addr), ntohl(resp.Mode));
+        if ((ntohl(resp.Mode) & client->mode & 0x000F) == 0) {
+        	perror("The client does not support any usable Mode");
+        	rv= 0;
+        }
+        client->mode = ntohl(resp.Mode);
     }
     return rv;
 }
@@ -191,7 +223,11 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
     int socket = client->socket;
     ServerStart msg;
     memset(&msg, 0, sizeof(msg));
-    msg.Accept = kOK;
+    if ((StartTime.integer == 0) && (StartTime.fractional == 0)) {
+        msg.Accept = kAspectNotSupported;
+    } else {
+        msg.Accept = kOK;
+    }
     msg.StartTime = StartTime;
     int rv = send(socket, &msg, sizeof(msg), 0);
     if (rv <= 0) {
@@ -217,15 +253,15 @@ static int send_start_ack(struct client_info *client)
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send StartACK message");
     } else
-        printf("StartACK message sent to %s\n", inet_ntoa(client->addr.sin_addr));
+        printf("StartACK message sent to %s\n",
+               inet_ntoa(client->addr.sin_addr));
     return rv;
 }
 
 /* This function treats the case when a StartSessions is received from the
  * Control-Client to start a number of TWAMP-Test sessions
  */
-static int receive_start_sessions(struct client_info *client,
-                                  StartSessions * req)
+static int receive_start_sessions(struct client_info *client)
 {
     int i;
     int rv = send_start_ack(client);
@@ -239,14 +275,17 @@ static int receive_start_sessions(struct client_info *client,
             fd_max = client->sessions[i].socket;
     }
     client->status = kTesting;
+    /* Title for printing */
+    fprintf(stderr,
+            "\tSnd@\t,\tTime\t, Snd#\t, Rcv#\t, SndPt\t,"
+            " RcvPt\t,  Sync\t, TTL\t, SndTOS, FW_TOS, Int D\t," " FWD [ms]\n");
     return rv;
 }
 
 /* This functions treats the case when a StopSessions is received from
  * the Control-Client to end all the Test sessions.
  */
-static int receive_stop_sessions(struct client_info *client,
-                                 StopSessions * req)
+static int receive_stop_sessions(struct client_info *client)
 {
     /* If a StopSessions message was received, it can still receive Test packets
      * until the timeout has expired */
@@ -272,13 +311,13 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
         struct sockaddr_in local_addr;
         memset(&local_addr, 0, sizeof(local_addr));
         local_addr.sin_family = AF_INET;
-        local_addr.sin_addr.s_addr = INADDR_ANY;
+        local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         local_addr.sin_port = req->ReceiverPort;
 
         int check_time = CHECK_TIMES;
         while (check_time-- && bind(testfd, (struct sockaddr *)&local_addr,
                                     sizeof(struct sockaddr)) < 0)
-            local_addr.sin_port = port_min + rand() % 1000;
+            local_addr.sin_port = htons(port_min + rand() % 1000);
 
         if (check_time > 0) {
             req->ReceiverPort = local_addr.sin_port;
@@ -286,7 +325,43 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
             acc.Port = req->ReceiverPort;
             client->sessions[client->sess_no].socket = testfd;
             client->sessions[client->sess_no].req = *req;
+            /* SID construction */
+            memcpy(acc.SID, &req->ReceiverAddress, 4);
+            TWAMPTimestamp sidtime = get_timestamp();
+            memcpy(&acc.SID[4], &sidtime, 8);
+            int k;
+            for (k = 0; k < 4; k++)
+                acc.SID[12 + k] = rand() % 256;
+            memcpy(&client->sessions[client->sess_no].sid_addr, &acc.SID, 4);
+            client->sessions[client->sess_no].sid_time = sidtime;
+            memcpy(&client->sessions[client->sess_no].sid_rand, &acc.SID[12],
+                   4);
+
+            /* Reflect Octets Mode */
+            if ((client->mode & kModeReflectOctets) == kModeReflectOctets) {
+                acc.ReflectedOctets = req->OctetsToBeReflected;
+                client->sessions[client->sess_no].server_oct = servo;
+                acc.ServerOctets = htons(servo);
+                printf("Reflected Octets: %u, Server Octets: %u\n",
+                       ntohs(acc.ReflectedOctets),
+                       client->sessions[client->sess_no].server_oct);
+            }
+
+            fprintf(stderr, "SID: 0x%04X.%04X.%04X.%04X \n",
+                    ntohl(client->sessions[client->sess_no].sid_addr),
+                    ntohl(client->sessions[client->sess_no].sid_time.integer),
+                    ntohl(client->sessions[client->sess_no].
+                          sid_time.fractional),
+                    ntohl(client->sessions[client->sess_no].sid_rand));
+
+            /* Set socket options */
+            set_socket_option(testfd, HDR_TTL);
+            set_socket_tos(testfd,
+                           (client->sessions[client->sess_no].
+                            req.TypePDescriptor << 2));
+
             client->sess_no++;
+
         } else {
             acc.Accept = kTemporaryResourceLimitation;
             acc.Port = 0;
@@ -305,11 +380,14 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
 static int receive_request_session(struct client_info *client,
                                    RequestSession * req)
 {
-    printf("Received RequestTWSession from %s\n", inet_ntoa(client->addr.sin_addr));
+    struct in_addr se_addr;
+    se_addr.s_addr = req->ReceiverAddress;
+    fprintf(stderr, "Server %s received RequestTWSession message\n",
+            inet_ntoa(se_addr));
     int rv = send_accept_session(client, req);
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
-        perror("Failed to send RequestTWSession accept");
+        perror("Failed to send the Accept-Session message");
     }
     return rv;
 }
@@ -319,11 +397,11 @@ static int receive_request_session(struct client_info *client,
  * TWAMP-Client) is always sending TWAMP-Test packets and the Session-Reflector
  * (Server) is receiving TWAMP-Test packets.
  */
+
 static int receive_test_message(struct client_info *client, int session_index)
 {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
-    static uint32_t seq_nr = 0;
 
     ReflectorUPacket pack_reflect;
     memset(&pack_reflect, 0, sizeof(pack_reflect));
@@ -331,9 +409,28 @@ static int receive_test_message(struct client_info *client, int session_index)
     SenderUPacket pack;
     memset(&pack, 0, sizeof(pack));
 
-    int rv =
-        recvfrom(client->sessions[session_index].socket, &pack, sizeof(pack), 0,
-                 (struct sockaddr*) &addr, &len);
+    /* New for recvmsg */
+
+    struct msghdr *message = malloc(sizeof(struct msghdr));
+    struct cmsghdr *c_msg;
+    char *control_buffer = malloc(TST_PKT_SIZE);
+    uint16_t control_length = TST_PKT_SIZE;
+
+    memset(message, 0, sizeof(*message));
+    message->msg_name = &addr;
+    message->msg_namelen = len;
+    message->msg_iov = malloc(sizeof(struct iovec));
+    message->msg_iov->iov_base = &pack;
+    message->msg_iov->iov_len = TST_PKT_SIZE;
+    message->msg_iovlen = 1;
+    /* Message control does not exist on every system. For instance, HP Tru64
+     * does not have it */
+#ifndef NO_MESSAGE_CONTROL
+    message->msg_control = control_buffer;
+    message->msg_controllen = control_length;
+#endif
+
+    int rv = recvmsg(client->sessions[session_index].socket, message, 0);
 
     pack_reflect.receive_time = get_timestamp();
 
@@ -347,30 +444,100 @@ static int receive_test_message(struct client_info *client, int session_index)
         return rv;
     }
 
-    printf("Received TWAMP-Test message from %s\n", inet_ntoa(addr.sin_addr));
-    pack_reflect.seq_number = htonl(seq_nr++);
-    pack_reflect.error_estimate = 0x100;  // Multiplier = 1
+    /* Get TTL/TOS values from IP header */
+    uint8_t fw_ttl = 0;
+    uint8_t fw_tos = 0;
+
+#ifndef NO_MESSAGE_CONTROL
+    for (c_msg = CMSG_FIRSTHDR(message); c_msg;
+         c_msg = (CMSG_NXTHDR(message, c_msg))) {
+        if ((c_msg->cmsg_level == IPPROTO_IP && c_msg->cmsg_type == IP_TTL)
+            || (c_msg->cmsg_level == IPPROTO_IPV6
+                && c_msg->cmsg_type == IPV6_HOPLIMIT)) {
+            fw_ttl = *(int *)CMSG_DATA(c_msg);
+
+        } else if (c_msg->cmsg_level == IPPROTO_IP
+                   && c_msg->cmsg_type == IP_TOS) {
+            fw_tos = *(int *)CMSG_DATA(c_msg);
+
+        } else {
+            fprintf(stderr,
+                    "\tWarning, unexpected data of level %i and type %i\n",
+                    c_msg->cmsg_level, c_msg->cmsg_type);
+        }
+    }
+#else
+    fprintf(stdout,
+            "No message control on that platform, so no way to find IP options\n");
+#endif
+
+    /* printf("Received TWAMP-Test message from %s\n", inet_ntoa(addr.sin_addr)); */
+    pack_reflect.seq_number = htonl(client->sessions[session_index].seq_nb++);
+    pack_reflect.error_estimate = htons(0x8001);    // Sync = 1, Multiplier = 1
     pack_reflect.sender_seq_number = pack.seq_number;
     pack_reflect.sender_time = pack.time;
     pack_reflect.sender_error_estimate = pack.error_estimate;
-    pack_reflect.sender_ttl = 255;      // Should be set by the Sender to 255
+    pack_reflect.sender_ttl = fw_ttl;   // Copy from the IP header packet from Sender
+    if ((client->mode & kModeDSCPECN) == kModeDSCPECN) {
+        pack_reflect.sender_tos = fw_tos;   // Copy from the IP header packet from Sender
+    }
 
     addr.sin_port = client->sessions[session_index].req.SenderPort;
+
+    /* FW Loss Calculation */
+
+    if (client->sessions[session_index].fw_msg == 0) {
+        client->sessions[session_index].fw_msg = 1;
+        /* Response packet for TOS with ECN */
+        if ((fw_tos & 0x03) > 0) {
+            uint8_t ecn_tos =
+                (fw_tos & 0x03) - (((fw_tos & 0x2) >> 1) & (fw_tos & 0x1));
+
+            set_socket_tos(client->sessions[session_index].socket,
+                           (client->sessions[session_index].
+                            req.TypePDescriptor << 2) + ecn_tos);
+        }
+    } else {
+        client->sessions[session_index].fw_msg =
+            client->sessions[session_index].fw_msg + ntohl(pack.seq_number) -
+            client->sessions[session_index].snd_nb;
+        client->sessions[session_index].fw_lst_msg =
+            client->sessions[session_index].fw_lst_msg +
+            ntohl(pack.seq_number) - client->sessions[session_index].snd_nb - 1;
+    }
+    client->sessions[session_index].snd_nb = ntohl(pack.seq_number);
+
+    /* Response packet */
 
     pack_reflect.time = get_timestamp();
 
     if (rv < 41) {
-        rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41, 0,
-                   (struct sockaddr*) &addr, sizeof(addr));
-    }
-    else {
-        rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv, 0,
-                   (struct sockaddr*) &addr, sizeof(addr));
+        rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41,
+                    0, (struct sockaddr *)&addr, sizeof(addr));
+    } else {
+        rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv,
+                    0, (struct sockaddr *)&addr, sizeof(addr));
     }
 
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
         perror("Failed to send TWAMP-Test packet");
+    }
+
+    /* Print the FW metrics */
+
+    print_metrics_server(inet_ntoa(client->addr.sin_addr), ntohs(addr.sin_port),
+                         ntohs(client->sessions[session_index].
+                               req.ReceiverPort),
+                         (client->sessions[session_index].
+                          req.TypePDescriptor << 2), fw_tos, &pack_reflect);
+
+    if ((client->sessions[session_index].fw_msg % 10) == 0) {
+        printf("FW Lost packets: %u/%u, FW Loss Ratio: %3.2f%%\n",
+               client->sessions[session_index].fw_lst_msg,
+               client->sessions[session_index].fw_msg,
+               (float)100 * client->sessions[session_index].fw_lst_msg /
+               client->sessions[session_index].fw_msg);
     }
     return rv;
 }
@@ -380,7 +547,7 @@ int main(int argc, char *argv[])
     char *progname = NULL;
     srand(time(NULL));
     /* Obtain the program name without the full path */
-    progname = (progname = strrchr(argv[0], '/')) ? progname + 1 : *argv;
+    progname = (progname == strrchr(argv[0], '/')) ? progname + 1 : *argv;
 
     /* Sanity check */
     if (getuid() == 0) {
@@ -408,11 +575,12 @@ int main(int argc, char *argv[])
     struct sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     serv_addr.sin_port = htons(SERVER_PORT);
 
     used_sockets++;
-    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) < 0) {
+    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) <
+        0) {
         perror("Error on binding");
         exit(EXIT_FAILURE);
     }
@@ -450,24 +618,25 @@ int main(int argc, char *argv[])
         if (FD_ISSET(listenfd, &tmp_fds)) {
             uint32_t client_len = sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
-                                    (struct sockaddr *)&client_addr, 
+                                    (struct sockaddr *)&client_addr,
                                     &client_len)) < 0) {
                 perror("Error in accept");
             } else {
                 /* Add a new client if there are any slots available */
                 int pos = find_empty_client(clients, MAX_CLIENTS);
-                uint8_t mode_mask = 0;
+                uint16_t mode_mask = 0;
 
                 if (pos != -1) {
                     clients[pos].status = kConnected;
                     clients[pos].socket = newsockfd;
                     clients[pos].addr = client_addr;
+                    clients[pos].mode = authmode;
                     clients[pos].sess_no = 0;
                     used_sockets++;
                     FD_SET(newsockfd, &read_fds);
                     if (newsockfd > fd_max)
                         fd_max = newsockfd;
-                    mode_mask = 0xFF;
+                    mode_mask = 0x01FF;
                 }
                 rv = send_greeting(mode_mask, &clients[pos]);
             }
@@ -486,8 +655,10 @@ int main(int argc, char *argv[])
                          * ServerGreeting has been sent, wait for the
                          * SetUpResponse and finish the TWAMP-Control setup */
                         rv = receive_greet_response(&clients[i]);
-                        if (rv > 0) {
+                        if (rv > 32) {
                             rv = send_start_serv(&clients[i], StartTime);
+                        } else {
+                            rv = send_start_serv(&clients[i], ZeroT);
                         }
                         break;
                     case kConfigured:
@@ -502,12 +673,12 @@ int main(int argc, char *argv[])
                          * StartSessions or RequestTWSession */
                         switch (buffer[0]) {
                         case kStartSessions:
-                            rv = receive_start_sessions(&clients[i],
-                                                        (StartSessions *)buffer);
+                            rv = receive_start_sessions(&clients[i]);
                             break;
                         case kRequestTWSession:
                             rv = receive_request_session(&clients[i],
-                                                         (RequestSession *)buffer);
+                                                         (RequestSession *)
+                                                         buffer);
                             break;
                         default:
                             break;
@@ -525,8 +696,7 @@ int main(int argc, char *argv[])
                             break;
                         }
                         if (buffer[0] == kStopSessions) {
-                            rv = receive_stop_sessions(&clients[i],
-                                                       (StopSessions *) buffer);
+                            rv = receive_stop_sessions(&clients[i]);
                         }
                         break;
                     default:
@@ -542,8 +712,10 @@ int main(int argc, char *argv[])
             if (clients[i].status == kTesting) {
                 uint8_t has_active_test_sessions = 0;
                 for (j = 0; j < clients[i].sess_no; j++) {
-                    rv = get_actual_shutdown(&current, &clients[i].shutdown_time,
-                                             &clients[i].sessions[j].req.Timeout);
+                    rv = get_actual_shutdown(&current,
+                                             &clients[i].shutdown_time,
+                                             &clients[i].sessions[j].req.
+                                             Timeout);
                     if (rv > 0) {
                         has_active_test_sessions = 1;
                         if (FD_ISSET(clients[i].sessions[j].socket, &tmp_fds)) {
@@ -554,10 +726,20 @@ int main(int argc, char *argv[])
                         close(clients[i].sessions[j].socket);
                         used_sockets--;
                         clients[i].sessions[j].socket = -1;
+
+                        /* print loss result */
+                        fprintf(stderr,
+                                "Session: %u, FW Lost packets: %u/%u, FW Loss Ratio: %3.2f%%\n",
+                                j, clients[i].sessions[j].fw_lst_msg,
+                                clients[i].sessions[j].fw_msg,
+                                (float)100 * clients[i].sessions[j].fw_lst_msg /
+                                clients[i].sessions[j].fw_msg);
+
                     }
                 }
                 if (!has_active_test_sessions) {
-                    memset(&clients[i].shutdown_time, 0, sizeof(clients[i].shutdown_time));
+                    memset(&clients[i].shutdown_time, 0,
+                           sizeof(clients[i].shutdown_time));
                     clients[i].sess_no = 0;
                     clients[i].status = kConfigured;
                 }
