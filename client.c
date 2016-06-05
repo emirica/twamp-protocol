@@ -20,6 +20,7 @@
 #include <netdb.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <errno.h>
 #include "twamp.h"
 
 #define PORTBASE_SEND    30000
@@ -274,8 +275,8 @@ int main(int argc, char *argv[])
                       sizeof(struct sockaddr)))
                 break;
         }
-        if (check_time == 0) {
-            fprintf(stderr, "Couldn't find a port to bind to for session %d\n", i + 1);
+        if (check_time < 0) {
+            fprintf(stderr, "Couldn't find a port to bind to for session %d\n  %s", i + 1, strerror(errno));
             continue;
         }
 
