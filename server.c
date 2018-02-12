@@ -86,7 +86,7 @@ static void usage(char *progname)
 static int parse_options(char *progname, int argc, char *argv[])
 {
     int opt;
-    if (argc < 1 || argc > 5) {
+    if (argc < 1 || argc > 7) {
         fprintf(stderr, "Wrong number of arguments for %s\n", progname);
         return 1;
     }
@@ -129,7 +129,10 @@ static int parse_options(char *progname, int argc, char *argv[])
  */
 static void cleanup_client(struct client_info *client)
 {
-    fprintf(stderr, "Cleanup client %s\n", inet_ntoa(client->addr.sin_addr));
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    fprintf(stderr, "Cleanup client %s\n", str_client);
+    //fprintf(stderr, "Cleanup client %s\n", inet_ntoa(client->addr.sin_addr));
     FD_CLR(client->socket, &read_fds);
     close(client->socket);
     used_sockets--;
@@ -164,6 +167,8 @@ static int find_empty_client(struct client_info *clients, int max_clients)
 static int send_greeting(uint16_t mode_mask, struct client_info *client)
 {
     int socket = client->socket;
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     int i;
     ServerGreeting greet;
     memset(&greet, 0, sizeof(greet));
@@ -176,16 +181,15 @@ static int send_greeting(uint16_t mode_mask, struct client_info *client)
 
     int rv = send(socket, &greet, sizeof(greet), 0);
     if (rv < 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send ServerGreeting message");
         cleanup_client(client);
     } else if ((authmode & 0x000F) == 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Sent ServerGreeting message with Mode 0! Abort");
         cleanup_client(client);
     } else {
-        printf("Sent ServerGreeting message to %s\n",
-               inet_ntoa(client->addr.sin_addr));
+        printf("Sent ServerGreeting message to %s\n", str_client);
     }
     return rv;
 }
@@ -196,19 +200,22 @@ static int send_greeting(uint16_t mode_mask, struct client_info *client)
 static int receive_greet_response(struct client_info *client)
 {
     int socket = client->socket;
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
     int rv = recv(socket, &resp, sizeof(resp), 0);
     if (rv <= 32) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to receive SetUpResponse");
-        client->mode = ntohl(0);
-        } else {
+        //client->mode = ntohl(0);
+        cleanup_client(client);
+    } else {
         fprintf(stderr, "Received SetUpResponse message from %s with mode %d\n",
-                inet_ntoa(client->addr.sin_addr), ntohl(resp.Mode));
+                str_client, ntohl(resp.Mode));
         if ((ntohl(resp.Mode) & client->mode & 0x000F) == 0) {
-        	perror("The client does not support any usable Mode");
-        	rv= 0;
+            perror("The client does not support any usable Mode");
+            rv = 0;
         }
         client->mode = ntohl(resp.Mode);
     }
@@ -221,6 +228,8 @@ static int receive_greet_response(struct client_info *client)
 static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
 {
     int socket = client->socket;
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     ServerStart msg;
     memset(&msg, 0, sizeof(msg));
     if ((StartTime.integer == 0) && (StartTime.fractional == 0)) {
@@ -231,13 +240,15 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
     msg.StartTime = StartTime;
     int rv = send(socket, &msg, sizeof(msg), 0);
     if (rv <= 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send ServerStart message");
         cleanup_client(client);
     } else {
         client->status = kConfigured;
-        printf("ServerStart message sent to %s\n",
-               inet_ntoa(client->addr.sin_addr));
+        printf("ServerStart message sent to %s\n", str_client);
+        if (msg.Accept == kAspectNotSupported) {
+            cleanup_client(client);
+        }
     }
     return rv;
 }
@@ -245,16 +256,17 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
 /* Sends a StartACK for the StartSessions message */
 static int send_start_ack(struct client_info *client)
 {
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     StartACK ack;
     memset(&ack, 0, sizeof(ack));
     ack.Accept = kOK;
     int rv = send(client->socket, &ack, sizeof(ack), 0);
     if (rv <= 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send StartACK message");
     } else
-        printf("StartACK message sent to %s\n",
-               inet_ntoa(client->addr.sin_addr));
+        printf("StartACK message sent to %s\n", str_client);
     return rv;
 }
 
@@ -296,6 +308,8 @@ static int receive_stop_sessions(struct client_info *client)
 /* Computes the response to a RequestTWSession message */
 static int send_accept_session(struct client_info *client, RequestSession * req)
 {
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     AcceptSession acc;
     memset(&acc, 0, sizeof(acc));
 
@@ -303,7 +317,7 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
     if ((used_sockets < 64) && (client->sess_no < MAX_SESSIONS_PER_CLIENT)) {
         int testfd = socket(AF_INET, SOCK_DGRAM, 0);
         if (testfd < 0) {
-            fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+            fprintf(stderr, "[%s] ", str_client);
             perror("Error opening socket");
             return -1;
         }
@@ -380,13 +394,18 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
 static int receive_request_session(struct client_info *client,
                                    RequestSession * req)
 {
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
     struct in_addr se_addr;
     se_addr.s_addr = req->ReceiverAddress;
+    char str_server[INET_ADDRSTRLEN];   /* String for Server IP address */
+    inet_ntop(AF_INET, &(se_addr), str_server, INET_ADDRSTRLEN);
     fprintf(stderr, "Server %s received RequestTWSession message\n",
-            inet_ntoa(se_addr));
+            str_server);
+
     int rv = send_accept_session(client, req);
     if (rv <= 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send the Accept-Session message");
     }
     return rv;
@@ -402,6 +421,8 @@ static int receive_test_message(struct client_info *client, int session_index)
 {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
+    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
 
     ReflectorUPacket pack_reflect;
     memset(&pack_reflect, 0, sizeof(pack_reflect));
@@ -434,12 +455,14 @@ static int receive_test_message(struct client_info *client, int session_index)
 
     pack_reflect.receive_time = get_timestamp();
 
+    char str_server[INET_ADDRSTRLEN];   /* String for Server IP address */
+    inet_ntop(AF_INET, &(addr.sin_addr), str_server, INET_ADDRSTRLEN);
     if (rv <= 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_server);
         perror("Failed to receive TWAMP-Test packet");
         return rv;
     } else if (rv < 14) {
-        fprintf(stderr, "[%s] ", inet_ntoa(addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_server);
         perror("Short TWAMP-Test packet");
         return rv;
     }
@@ -520,13 +543,13 @@ static int receive_test_message(struct client_info *client, int session_index)
     }
 
     if (rv <= 0) {
-        fprintf(stderr, "[%s] ", inet_ntoa(client->addr.sin_addr));
+        fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send TWAMP-Test packet");
     }
 
     /* Print the FW metrics */
 
-    print_metrics_server(inet_ntoa(client->addr.sin_addr), ntohs(addr.sin_port),
+    print_metrics_server(str_client, ntohs(addr.sin_port),
                          ntohs(client->sessions[session_index].
                                req.ReceiverPort),
                          (client->sessions[session_index].
@@ -549,11 +572,13 @@ int main(int argc, char *argv[])
     /* Obtain the program name without the full path */
     progname = (progname == strrchr(argv[0], '/')) ? progname + 1 : *argv;
 
+#if 1
     /* Sanity check */
     if (getuid() == 0) {
         fprintf(stderr, "%s should not be run as root\n", progname);
         exit(EXIT_FAILURE);
     }
+#endif
 
     /* Parse options */
     if (parse_options(progname, argc, argv)) {

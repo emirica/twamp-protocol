@@ -226,13 +226,16 @@ int main(int argc, char *argv[])
     }
 
     struct sockaddr_in serv_addr;
-    struct hostent *server = NULL;
+    //struct hostent *server = NULL;
+    struct hostent *server;
 
     /* Sanity check */
+#if 1
     if (getuid() == 0) {
         fprintf(stderr, "%s should not be run as root\n", progname);
         exit(EXIT_FAILURE);
     }
+#endif
 
     /* Check client options */
     if (parse_options(&server, argc, argv)) {
@@ -256,7 +259,9 @@ int main(int argc, char *argv[])
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     serv_addr.sin_port = htons(SERVER_PORT);
 
-    printf("Connecting to server %s...\n", inet_ntoa(serv_addr.sin_addr));
+    char str_serv[INET_ADDRSTRLEN]; /* String for Server IP address */
+    inet_ntop(AF_INET, &(serv_addr.sin_addr), str_serv, INET_ADDRSTRLEN);
+    printf("Connecting to Server %s...\n", str_serv);
     if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         perror("Error connecting");
         exit(EXIT_FAILURE);
@@ -298,6 +303,31 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* Set Timeout to exit in case server does not respond to mode 0 */
+    if (workmode == 0) {
+        //close(servfd);
+        fprintf(stderr,
+                "The client and server do not support any usable Mode.\n");
+        //exit(EXIT_FAILURE);
+        int result;
+
+        /* Set Timeout */
+        struct timeval timeout = { 5, 0 };  //set timeout for 5 seconds
+
+        /* Set receive UDP message timeout value */
+#ifdef SO_RCVTIMEO
+        result = setsockopt(servfd, SOL_SOCKET, SO_RCVTIMEO,
+                            (char *)&timeout, sizeof(struct timeval));
+        if (result != 0) {
+            fprintf(stderr,
+                    "[PROBLEM] Cannot set the timeout value for reception.\n");
+        }
+#else
+        fprintf(stderr,
+                "No way to set the timeout value for incoming packets on that platform.\n");
+#endif
+    }
+
     /* Receive ServerStart message */
     ServerStart start;
     memset(&start, 0, sizeof(start));
@@ -318,8 +348,9 @@ int main(int argc, char *argv[])
     struct sockaddr_in host_addr;
     socklen_t addr_size = sizeof(host_addr);
     getsockname(servfd, (struct sockaddr *)&host_addr, &addr_size);
-    printf("Received ServerStart at Client %s\n",
-           inet_ntoa(host_addr.sin_addr));
+    char str_host[INET_ADDRSTRLEN]; /* String for Client IP address */
+    inet_ntop(AF_INET, &(host_addr.sin_addr), str_host, INET_ADDRSTRLEN);
+    printf("Received ServerStart at Client %s\n", str_host);
 
     /* After the TWAMP-Control connection has been established, the
      * Control-Client will negociate and set up some TWAMP-Test sessions */
@@ -376,6 +407,7 @@ int main(int argc, char *argv[])
         req.SenderPort = htons(twamp_test[active_sessions].testport);
         req.ReceiverPort = htons(port_recv + rand() % 1000);
         req.SenderAddress = host_addr.sin_addr.s_addr;
+        //req.SenderAddress = 0;
         req.ReceiverAddress = serv_addr.sin_addr.s_addr;
         if ((workmode & KModeSymmetrical) == KModeSymmetrical) {
             mbz_offset = 27;
@@ -443,12 +475,11 @@ int main(int argc, char *argv[])
                 ntohl(sid_time.fractional), ntohl(sid_rand));
 
         twamp_test[active_sessions].serveroct = (acc.ServerOctets);
+
         fprintf(stderr,
                 "#Session \t%d, Sender  \t%s:%d, Receiver \t%s:%d, Mode: %d\n",
-                active_sessions, inet_ntoa(host_addr.sin_addr),
-                twamp_test[active_sessions].testport,
-                inet_ntoa(serv_addr.sin_addr), twamp_test[active_sessions].port,
-                workmode);
+                active_sessions, str_host, twamp_test[active_sessions].testport,
+                str_serv, twamp_test[active_sessions].port, workmode);
         if ((workmode & kModeReflectOctets) == kModeReflectOctets) {
             fprintf(stderr,
                     "Octets to be reflected: %u, Reflected octets: %d,"

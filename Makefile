@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra
+CFLAGS = -Wall -Wextra -Werror -g
+LDFLAGS = -static
 PROGS = server client
 
 all: $(PROGS)
