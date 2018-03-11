@@ -1,4 +1,8 @@
-
+.project
+.cproject
 *.swp
-
+client
+server
 tags
+/Debug/
+/Release/

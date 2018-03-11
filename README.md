@@ -9,6 +9,9 @@ Read the RFC:
 Developer:
     Emma Mirică
 
+Contributions:
+    stephanDB
+
 Note:
     This is a minimal implementation of the TWAMP protocol.
 
