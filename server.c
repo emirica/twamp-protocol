@@ -50,6 +50,7 @@ struct client_info {
     ClientStatus status;
     int socket;
     struct sockaddr_in addr;
+    struct sockaddr_in6 addr6;
     int mode;
     int sess_no;
     struct timeval shutdown_time;
@@ -65,6 +66,7 @@ static enum Mode authmode = kModeUnauthenticated;
 static int used_sockets = 0;
 static fd_set read_fds;
 static uint16_t servo = 0;      /* Server Octets to be sent by sender */
+static int socket_family = AF_INET;
 
 TWAMPTimestamp ZeroT = { 0, 0 };
 
@@ -78,6 +80,7 @@ static void usage(char *progname)
             "	-a authmode		Default is Unauthenticated\n"
             "	-p port_min		Port range for Test receivers based on port_min (>1063)\n"
             "	-o servo     	2 Octets to be reflected by Sender in Reflected Mode (<65536)\n"
+            "	-6              Use IPv6 if this option is defined. Otherwise, Ipv4 will be used.\n"
             "	-h         		Prints this help message and exits\n");
     return;
 }
@@ -91,7 +94,7 @@ static int parse_options(char *progname, int argc, char *argv[])
         return 1;
     }
 
-    while ((opt = getopt(argc, argv, "a:p:o:h")) != -1) {
+    while ((opt = getopt(argc, argv, "a:p:o:h:6")) != -1) {
         switch (opt) {
         case 'a':
             authmode = strtol(optarg, NULL, 10);
@@ -114,6 +117,9 @@ static int parse_options(char *progname, int argc, char *argv[])
             /* The octets value must be a valid one */
             authmode = authmode | kModeReflectOctets;
             break;
+        case '6':
+            socket_family = AF_INET6;
+            break;
         case 'h':
         default:
             return 1;
@@ -129,8 +135,11 @@ static int parse_options(char *progname, int argc, char *argv[])
  */
 static void cleanup_client(struct client_info *client)
 {
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    char str_client[INET6_ADDRSTRLEN];
+    inet_ntop(socket_family, (socket_family == AF_INET6) ?
+                                    (void*) &(client->addr6.sin6_addr) :
+                                    (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
     fprintf(stderr, "Cleanup client %s\n", str_client);
     //fprintf(stderr, "Cleanup client %s\n", inet_ntoa(client->addr.sin_addr));
     FD_CLR(client->socket, &read_fds);
@@ -167,8 +176,13 @@ static int find_empty_client(struct client_info *clients, int max_clients)
 static int send_greeting(uint16_t mode_mask, struct client_info *client)
 {
     int socket = client->socket;
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+
+    char str_client[INET6_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
+
     int i;
     ServerGreeting greet;
     memset(&greet, 0, sizeof(greet));
@@ -200,8 +214,12 @@ static int send_greeting(uint16_t mode_mask, struct client_info *client)
 static int receive_greet_response(struct client_info *client)
 {
     int socket = client->socket;
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    char str_client[INET6_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
+
     SetUpResponse resp;
     memset(&resp, 0, sizeof(resp));
     int rv = recv(socket, &resp, sizeof(resp), 0);
@@ -228,8 +246,13 @@ static int receive_greet_response(struct client_info *client)
 static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
 {
     int socket = client->socket;
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+
+    char str_client[INET6_ADDRSTRLEN];
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
+
     ServerStart msg;
     memset(&msg, 0, sizeof(msg));
     if ((StartTime.integer == 0) && (StartTime.fractional == 0)) {
@@ -256,8 +279,11 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
 /* Sends a StartACK for the StartSessions message */
 static int send_start_ack(struct client_info *client)
 {
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    char str_client[INET6_ADDRSTRLEN];
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
     StartACK ack;
     memset(&ack, 0, sizeof(ack));
     ack.Accept = kOK;
@@ -308,33 +334,57 @@ static int receive_stop_sessions(struct client_info *client)
 /* Computes the response to a RequestTWSession message */
 static int send_accept_session(struct client_info *client, RequestSession * req)
 {
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    char str_client[INET6_ADDRSTRLEN];   /* String for Client IP address */
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
     AcceptSession acc;
     memset(&acc, 0, sizeof(acc));
 
     /* Check if there are any slots available */
     if ((used_sockets < 64) && (client->sess_no < MAX_SESSIONS_PER_CLIENT)) {
-        int testfd = socket(AF_INET, SOCK_DGRAM, 0);
+        int testfd = socket(socket_family, SOCK_DGRAM, 0);
         if (testfd < 0) {
             fprintf(stderr, "[%s] ", str_client);
             perror("Error opening socket");
             return -1;
         }
 
-        struct sockaddr_in local_addr;
-        memset(&local_addr, 0, sizeof(local_addr));
-        local_addr.sin_family = AF_INET;
-        local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        local_addr.sin_port = req->ReceiverPort;
-
         int check_time = CHECK_TIMES;
-        while (check_time-- && bind(testfd, (struct sockaddr *)&local_addr,
+        if(socket_family == AF_INET6) {
+            struct sockaddr_in6 local_addr;
+            memset(&local_addr, 0, sizeof(local_addr));
+            local_addr.sin6_family = AF_INET6;
+            local_addr.sin6_addr = in6addr_any;
+            local_addr.sin6_port = req->ReceiverPort;
+
+            while (check_time-- && bind(testfd, (struct sockaddr *)&local_addr,
+                                    sizeof(local_addr)) < 0)
+                local_addr.sin6_port = htons(port_min + rand() % 1000);
+
+            if (check_time > 0) {
+                req->ReceiverPort = local_addr.sin6_port;
+            }
+        } else {
+            struct sockaddr_in local_addr;
+            memset(&local_addr, 0, sizeof(local_addr));
+            local_addr.sin_family = AF_INET;
+            local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+            local_addr.sin_port = req->ReceiverPort;
+
+            while (check_time-- && bind(testfd, (struct sockaddr *)&local_addr,
                                     sizeof(struct sockaddr)) < 0)
-            local_addr.sin_port = htons(port_min + rand() % 1000);
+                local_addr.sin_port = htons(port_min + rand() % 1000);
+
+            if (check_time > 0) {
+                req->ReceiverPort = local_addr.sin_port;
+            }
+        }
 
         if (check_time > 0) {
-            req->ReceiverPort = local_addr.sin_port;
+
+
             acc.Accept = kOK;
             acc.Port = req->ReceiverPort;
             client->sessions[client->sess_no].socket = testfd;
@@ -377,11 +427,13 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
             client->sess_no++;
 
         } else {
+            fprintf(stderr, "kTemporaryResourceLimitation: check_time [%d]\n", check_time);
             acc.Accept = kTemporaryResourceLimitation;
             acc.Port = 0;
         }
 
     } else {
+        fprintf(stderr, "kTemporaryResourceLimitation: used_sockets [%d], sess_no [%d]\n", used_sockets, client->sess_no);
         acc.Accept = kTemporaryResourceLimitation;
         acc.Port = 0;
     }
@@ -394,14 +446,19 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
 static int receive_request_session(struct client_info *client,
                                    RequestSession * req)
 {
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
-    struct in_addr se_addr;
-    se_addr.s_addr = req->ReceiverAddress;
-    char str_server[INET_ADDRSTRLEN];   /* String for Server IP address */
-    inet_ntop(AF_INET, &(se_addr), str_server, INET_ADDRSTRLEN);
-    fprintf(stderr, "Server %s received RequestTWSession message\n",
-            str_server);
+    char str_client[INET6_ADDRSTRLEN];   /* String for Client IP address */
+
+    if(socket_family == AF_INET6) {
+        inet_ntop(AF_INET6, &(client->addr6.sin6_addr), str_client, sizeof(str_client));
+        fprintf(stderr, "Server received RequestTWSession message\n");
+    } else {
+        char str_server[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+        struct in_addr se_addr;
+        se_addr.s_addr = req->ReceiverAddress;
+        inet_ntop(AF_INET, &(se_addr), str_server, INET_ADDRSTRLEN);
+        fprintf(stderr, "Server %s received RequestTWSession message\n", str_server);
+    }
 
     int rv = send_accept_session(client, req);
     if (rv <= 0) {
@@ -420,9 +477,15 @@ static int receive_request_session(struct client_info *client,
 static int receive_test_message(struct client_info *client, int session_index)
 {
     struct sockaddr_in addr;
+    struct sockaddr_in6 addr6;
     socklen_t len = sizeof(addr);
-    char str_client[INET_ADDRSTRLEN];   /* String for Client IP address */
-    inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
+    char str_client[INET6_ADDRSTRLEN];
+
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(client->addr6.sin6_addr) :
+                                   (void*) &(client->addr.sin_addr),
+                            str_client, sizeof(str_client));
+
 
     ReflectorUPacket pack_reflect;
     memset(&pack_reflect, 0, sizeof(pack_reflect));
@@ -438,7 +501,7 @@ static int receive_test_message(struct client_info *client, int session_index)
     uint16_t control_length = TST_PKT_SIZE;
 
     memset(message, 0, sizeof(*message));
-    message->msg_name = &addr;
+    message->msg_name = (socket_family == AF_INET6)? (void*)&addr6: (void*)&addr;
     message->msg_namelen = len;
     message->msg_iov = malloc(sizeof(struct iovec));
     message->msg_iov->iov_base = &pack;
@@ -455,8 +518,12 @@ static int receive_test_message(struct client_info *client, int session_index)
 
     pack_reflect.receive_time = get_timestamp();
 
-    char str_server[INET_ADDRSTRLEN];   /* String for Server IP address */
-    inet_ntop(AF_INET, &(addr.sin_addr), str_server, INET_ADDRSTRLEN);
+    char str_server[INET6_ADDRSTRLEN];   /* String for Client IP address */
+
+    inet_ntop(socket_family, (socket_family == AF_INET6)?
+                                   (void*) &(addr6.sin6_addr) :
+                                   (void*) &(addr.sin_addr),
+                            str_server, sizeof(str_server));
     if (rv <= 0) {
         fprintf(stderr, "[%s] ", str_server);
         perror("Failed to receive TWAMP-Test packet");
@@ -505,8 +572,11 @@ static int receive_test_message(struct client_info *client, int session_index)
         pack_reflect.sender_tos = fw_tos;   // Copy from the IP header packet from Sender
     }
 
-    addr.sin_port = client->sessions[session_index].req.SenderPort;
-
+    if(socket_family == AF_INET6) {
+        addr.sin_port = client->sessions[session_index].req.SenderPort;
+    } else {
+        addr6.sin6_port = client->sessions[session_index].req.SenderPort;
+    }
     /* FW Loss Calculation */
 
     if (client->sessions[session_index].fw_msg == 0) {
@@ -534,12 +604,22 @@ static int receive_test_message(struct client_info *client, int session_index)
 
     pack_reflect.time = get_timestamp();
 
-    if (rv < 41) {
-        rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41,
-                    0, (struct sockaddr *)&addr, sizeof(addr));
+    if(socket_family == AF_INET6) {
+        if (rv < 41) {
+            rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41,
+                        0, (struct sockaddr *)&addr6, sizeof(addr6));
+        } else {
+            rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv,
+                        0, (struct sockaddr *)&addr6, sizeof(addr6));
+        }
     } else {
-        rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv,
-                    0, (struct sockaddr *)&addr, sizeof(addr));
+        if (rv < 41) {
+            rv = sendto(client->sessions[session_index].socket, &pack_reflect, 41,
+                        0, (struct sockaddr *)&addr, sizeof(addr));
+        } else {
+            rv = sendto(client->sessions[session_index].socket, &pack_reflect, rv,
+                        0, (struct sockaddr *)&addr, sizeof(addr));
+        }
     }
 
     if (rv <= 0) {
@@ -549,7 +629,7 @@ static int receive_test_message(struct client_info *client, int session_index)
 
     /* Print the FW metrics */
 
-    print_metrics_server(str_client, ntohs(addr.sin_port),
+    print_metrics_server(str_client, socket_family == AF_INET6 ? ntohs(addr6.sin6_port): ntohs(addr.sin_port),
                          ntohs(client->sessions[session_index].
                                req.ReceiverPort),
                          (client->sessions[session_index].
@@ -590,25 +670,41 @@ int main(int argc, char *argv[])
     TWAMPTimestamp StartTime = get_timestamp();
     int listenfd;
 
-    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    listenfd = socket(socket_family, SOCK_STREAM, 0);
     if (listenfd < 0) {
         perror("Error opening socket");
         exit(EXIT_FAILURE);
     }
 
-    /* Set Server address and bind on the TWAMP port */
-    struct sockaddr_in serv_addr;
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    serv_addr.sin_port = htons(SERVER_PORT);
+    if(socket_family == AF_INET6) {
+        /* Set Server address and bind on the TWAMP port */
+        struct sockaddr_in6 serv_addr;
+        memset(&serv_addr, 0, sizeof(serv_addr));
+        serv_addr.sin6_family = AF_INET6;
+        serv_addr.sin6_addr = in6addr_any;
+        serv_addr.sin6_port = htons(SERVER_PORT);
+
+        if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) <
+            0) {
+            perror("Error on binding");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        /* Set Server address and bind on the TWAMP port */
+        struct sockaddr_in serv_addr;
+        memset(&serv_addr, 0, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        serv_addr.sin_port = htons(SERVER_PORT);
+
+        if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) <
+            0) {
+            perror("Error on binding");
+            exit(EXIT_FAILURE);
+        }
+    }
 
     used_sockets++;
-    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr)) <
-        0) {
-        perror("Error on binding");
-        exit(EXIT_FAILURE);
-    }
 
     /* Start listening on the TWAMP port for new TWAMP-Control connections */
     if (listen(listenfd, MAX_CLIENTS)) {
@@ -626,6 +722,7 @@ int main(int argc, char *argv[])
 
     int newsockfd;
     struct sockaddr_in client_addr;
+    struct sockaddr_in6 client_addr6;
     fd_set tmp_fds;
     FD_ZERO(&tmp_fds);
 
@@ -641,9 +738,13 @@ int main(int argc, char *argv[])
         /* If an event happened on the listenfd, then a new TWAMP-Control
          * connection is received */
         if (FD_ISSET(listenfd, &tmp_fds)) {
-            uint32_t client_len = sizeof(client_addr);
+            uint32_t client_len = (socket_family == AF_INET6)?
+                                    sizeof(client_addr6):
+                                    sizeof(client_addr);
             if ((newsockfd = accept(listenfd,
-                                    (struct sockaddr *)&client_addr,
+                                    (socket_family == AF_INET6)?
+                                        (struct sockaddr *)&client_addr6:
+                                        (struct sockaddr *)&client_addr,
                                     &client_len)) < 0) {
                 perror("Error in accept");
             } else {
@@ -655,6 +756,7 @@ int main(int argc, char *argv[])
                     clients[pos].status = kConnected;
                     clients[pos].socket = newsockfd;
                     clients[pos].addr = client_addr;
+                    clients[pos].addr6 = client_addr6;
                     clients[pos].mode = authmode;
                     clients[pos].sess_no = 0;
                     used_sockets++;

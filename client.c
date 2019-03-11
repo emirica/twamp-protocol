@@ -54,6 +54,7 @@ static uint16_t payload_len = 160;
 static uint8_t mbz_offset = 0;  /* Offset for padding in Symmetrical and DSCP/ECN Modes */
 static uint16_t active_sessions = 0;
 static uint16_t otbr = 0;       /* Octets To Be Reflected */
+static int socket_family = AF_INET;
 
 static enum Mode workmode = kModeUnauthenticated;
 
@@ -74,25 +75,27 @@ static void usage(char *progname)
             "   -l  payload_len The length of Test packets in bytes (>40 <1473)\n"
             "   -t  snd_tos     The TOS value for Test packets (<256)\n"
             "   -d  snd_tos     The DSCP value for Test packets (<64)\n"
-            "   -o  otbr     	2 Octets to be reflected value in Reflected Mode (<65536)\n"
+            "   -o  otbr        2 Octets to be reflected value in Reflected Mode (<65536)\n"
             "   -i  interval    The interval between Test packets [ms] (<10000)\n"
-            "	-h         		Prints this help message and exits\n");
+            "   -6              Use IPv6 if this option is defined. Otherwise, Ipv4 will be used.\n"
+            "   -h              Prints this help message and exits\n");
     return;
 }
 
 /* The parse_options will check the command line arguments */
 static int parse_options(struct hostent **server, int argc, char *argv[])
 {
+    char *server_host;
     if (argc < 2) {
         return 1;
     }
     int opt;
 
-    while ((opt = getopt(argc, argv, "s:a:p:P:n:m:l:t:d:i:o:h")) != -1) {
+    while ((opt = getopt(argc, argv, "s:a:p:P:n:m:l:t:d:i:o:h:6")) != -1) {
         switch (opt) {
         case 's':
             /* Get the Server's IP */
-            *server = gethostbyname(optarg);
+            server_host = optarg;
             break;
         case 'a':
             authmode = strtol(optarg, NULL, 10);
@@ -166,10 +169,19 @@ static int parse_options(struct hostent **server, int argc, char *argv[])
             /* The octets to be reflected value must be a valid one */
             authmode = authmode | kModeReflectOctets;
             break;
+        case '6':
+            socket_family = AF_INET6;
+            break;
         case 'h':
         default:
             return 1;
         }
+    }
+
+    if(socket_family == AF_INET6) {
+        *server = gethostbyname2(server_host, AF_INET6);
+    } else {
+        *server = gethostbyname(server_host);
     }
 
     return 0;
@@ -226,6 +238,7 @@ int main(int argc, char *argv[])
     }
 
     struct sockaddr_in serv_addr;
+    struct sockaddr_in6 serv_addr6;
     //struct hostent *server = NULL;
     struct hostent *server;
 
@@ -248,25 +261,40 @@ int main(int argc, char *argv[])
     }
 
     /* Create server socket connection for the TWAMP-Control session */
-    int servfd = socket(AF_INET, SOCK_STREAM, 0);
+    int servfd = socket(socket_family, SOCK_STREAM, 0);
     if (servfd < 0) {
         perror("Error opening socket");
         exit(EXIT_FAILURE);
     }
 
-    memset(&serv_addr, 0, sizeof(serv_addr));
-    serv_addr.sin_family = AF_INET;
-    memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
-    serv_addr.sin_port = htons(SERVER_PORT);
+    char str_serv[INET6_ADDRSTRLEN]; /* String for Server IP address */
+    if(socket_family == AF_INET6) {
+        memset(&serv_addr6, 0, sizeof(serv_addr6));
+        serv_addr6.sin6_family = AF_INET6;
+        memcpy(&serv_addr6.sin6_addr, server->h_addr, server->h_length);
+        serv_addr6.sin6_port = htons(SERVER_PORT);
 
-    char str_serv[INET_ADDRSTRLEN]; /* String for Server IP address */
-    inet_ntop(AF_INET, &(serv_addr.sin_addr), str_serv, INET_ADDRSTRLEN);
-    printf("Connecting to Server %s...\n", str_serv);
-    if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Error connecting");
-        exit(EXIT_FAILURE);
+        inet_ntop(AF_INET6, &(serv_addr6.sin6_addr), str_serv, INET6_ADDRSTRLEN);
+        printf("Connecting to Server %s...\n", str_serv);
+        if (connect(servfd, (struct sockaddr *)&serv_addr6, sizeof(serv_addr6)) < 0) {
+            perror("Error connecting");
+            exit(EXIT_FAILURE);
+        }
+
+    } else {
+        memset(&serv_addr, 0, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
+        serv_addr.sin_port = htons(SERVER_PORT);
+
+
+        inet_ntop(AF_INET, &(serv_addr.sin_addr), str_serv, INET_ADDRSTRLEN);
+        printf("Connecting to Server %s...\n", str_serv);
+        if (connect(servfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+            perror("Error connecting");
+            exit(EXIT_FAILURE);
+        }
     }
-
     /* TWAMP-Control change of messages after TCP connection is established */
 
     /* Receive Server Greeting and check Modes */
@@ -345,11 +373,21 @@ int main(int argc, char *argv[])
     }
 
     /* Check Server host IP address */
+    char str_host[INET6_ADDRSTRLEN]; /* String for Client IP address */
+
     struct sockaddr_in host_addr;
-    socklen_t addr_size = sizeof(host_addr);
-    getsockname(servfd, (struct sockaddr *)&host_addr, &addr_size);
-    char str_host[INET_ADDRSTRLEN]; /* String for Client IP address */
-    inet_ntop(AF_INET, &(host_addr.sin_addr), str_host, INET_ADDRSTRLEN);
+    struct sockaddr_in6 host_addr6;
+
+    if(socket_family == AF_INET6) {
+        socklen_t addr_size = sizeof(host_addr6);
+        getsockname(servfd, (struct sockaddr *)&host_addr, &addr_size);
+        inet_ntop(AF_INET6, &(host_addr6.sin6_addr), str_host, sizeof(str_host));
+    } else {
+        socklen_t addr_size = sizeof(host_addr);
+        getsockname(servfd, (struct sockaddr *)&host_addr, &addr_size);
+        inet_ntop(AF_INET, &(host_addr.sin_addr), str_host, sizeof(str_host));
+    }
+
     printf("Received ServerStart at Client %s\n", str_host);
 
     /* After the TWAMP-Control connection has been established, the
@@ -374,20 +412,37 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        struct sockaddr_in local_addr;
-        memset(&local_addr, 0, sizeof(local_addr));
-        local_addr.sin_family = AF_INET;
-        local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-        /* Try to bind on an available port */
         int check_time = CHECK_TIMES;
-        while (check_time--) {
-            twamp_test[active_sessions].testport = port_send + rand() % 1000;
-            local_addr.sin_port = htons(twamp_test[active_sessions].testport);
-            if (!bind
-                (twamp_test[active_sessions].testfd,
-                 (struct sockaddr *)&local_addr, sizeof(struct sockaddr)))
-                break;
+        if(socket_family == AF_INET6) {
+            struct sockaddr_in6 local_addr6;
+            memset(&local_addr6, 0, sizeof(local_addr6));
+            local_addr6.sin6_family = AF_INET6;
+            local_addr6.sin6_addr = in6addr_any;
+
+            /* Try to bind on an available port */
+            while (check_time--) {
+                twamp_test[active_sessions].testport = port_send + rand() % 1000;
+                local_addr6.sin6_port = htons(twamp_test[active_sessions].testport);
+                if (!bind
+                    (twamp_test[active_sessions].testfd,
+                     (struct sockaddr *)&local_addr6, sizeof(struct sockaddr)))
+                    break;
+            }
+        } else {
+            struct sockaddr_in local_addr;
+            memset(&local_addr, 0, sizeof(local_addr));
+            local_addr.sin_family = AF_INET;
+            local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+            /* Try to bind on an available port */
+            while (check_time--) {
+                twamp_test[active_sessions].testport = port_send + rand() % 1000;
+                local_addr.sin_port = htons(twamp_test[active_sessions].testport);
+                if (!bind
+                    (twamp_test[active_sessions].testfd,
+                     (struct sockaddr *)&local_addr, sizeof(struct sockaddr)))
+                    break;
+            }
         }
         if (check_time < 0) {
             fprintf(stderr,
@@ -406,9 +461,11 @@ int main(int argc, char *argv[])
         req.IPVN = 4;
         req.SenderPort = htons(twamp_test[active_sessions].testport);
         req.ReceiverPort = htons(port_recv + rand() % 1000);
-        req.SenderAddress = host_addr.sin_addr.s_addr;
-        //req.SenderAddress = 0;
-        req.ReceiverAddress = serv_addr.sin_addr.s_addr;
+        if(socket_family == AF_INET) {
+            req.SenderAddress = host_addr.sin_addr.s_addr;
+            //req.SenderAddress = 0;
+            req.ReceiverAddress = serv_addr.sin_addr.s_addr;
+        }
         if ((workmode & KModeSymmetrical) == KModeSymmetrical) {
             mbz_offset = 27;
             if ((workmode & kModeDSCPECN) == kModeDSCPECN) {
@@ -537,11 +594,19 @@ int main(int argc, char *argv[])
             pack.seq_number = htonl(index);
             pack.time = get_timestamp();
             pack.error_estimate = htons(0x8001);    // Sync = 1, Multiplier = 1.
-            serv_addr.sin_port = htons(twamp_test[i].port);
+
             memcpy(&pack.padding[mbz_offset], &twamp_test[i].serveroct, 2);
 
-            rv = sendto(twamp_test[i].testfd, &pack, payload_len, 0,
-                        (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+            if(socket_family == AF_INET6) {
+                serv_addr6.sin6_port = htons(twamp_test[i].port);
+                rv = sendto(twamp_test[i].testfd, &pack, payload_len, 0,
+                            (struct sockaddr *)&serv_addr6, sizeof(serv_addr6));
+            } else {
+                serv_addr.sin_port = htons(twamp_test[i].port);
+                rv = sendto(twamp_test[i].testfd, &pack, payload_len, 0,
+                            (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+            }
+
             if (rv <= 0) {
                 perror("Error sending test packet");
                 continue;
