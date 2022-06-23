@@ -140,8 +140,9 @@ static void cleanup_client(struct client_info *client)
                                     (void*) &(client->addr6.sin6_addr) :
                                     (void*) &(client->addr.sin_addr),
                             str_client, sizeof(str_client));
+#ifdef __DBG__
     fprintf(stderr, "Cleanup client %s\n", str_client);
-    //fprintf(stderr, "Cleanup client %s\n", inet_ntoa(client->addr.sin_addr));
+#endif
     FD_CLR(client->socket, &read_fds);
     close(client->socket);
     used_sockets--;
@@ -203,7 +204,9 @@ static int send_greeting(uint16_t mode_mask, struct client_info *client)
         perror("Sent ServerGreeting message with Mode 0! Abort");
         cleanup_client(client);
     } else {
+#ifdef __DBG__
         printf("Sent ServerGreeting message to %s\n", str_client);
+#endif
     }
     return rv;
 }
@@ -229,8 +232,11 @@ static int receive_greet_response(struct client_info *client)
         //client->mode = ntohl(0);
         cleanup_client(client);
     } else {
+#ifdef __DBG__
+
         fprintf(stderr, "Received SetUpResponse message from %s with mode %d\n",
                 str_client, ntohl(resp.Mode));
+#endif
         if ((ntohl(resp.Mode) & client->mode & 0x000F) == 0) {
             perror("The client does not support any usable Mode");
             rv = 0;
@@ -262,13 +268,15 @@ static int send_start_serv(struct client_info *client, TWAMPTimestamp StartTime)
     }
     msg.StartTime = StartTime;
     int rv = send(socket, &msg, sizeof(msg), 0);
-    if (rv <= 0) {
+    if (rv <= 0){
         fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send ServerStart message");
         cleanup_client(client);
     } else {
         client->status = kConfigured;
+#ifdef __DBG__
         printf("ServerStart message sent to %s\n", str_client);
+#endif
         if (msg.Accept == kAspectNotSupported) {
             cleanup_client(client);
         }
@@ -292,7 +300,11 @@ static int send_start_ack(struct client_info *client)
         fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send StartACK message");
     } else
+    {
+#ifdef __DBG__
         printf("StartACK message sent to %s\n", str_client);
+#endif
+    }
     return rv;
 }
 
@@ -314,9 +326,11 @@ static int receive_start_sessions(struct client_info *client)
     }
     client->status = kTesting;
     /* Title for printing */
+#if __DBG__
     fprintf(stderr,
             "\tSnd@\t,\tTime\t, Snd#\t, Rcv#\t, SndPt\t,"
             " RcvPt\t,  Sync\t, TTL\t, SndTOS, FW_TOS, Int D\t," " FWD [ms]\n");
+#endif
     return rv;
 }
 
@@ -406,18 +420,20 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
                 acc.ReflectedOctets = req->OctetsToBeReflected;
                 client->sessions[client->sess_no].server_oct = servo;
                 acc.ServerOctets = htons(servo);
+#if __DBG__
                 printf("Reflected Octets: %u, Server Octets: %u\n",
                        ntohs(acc.ReflectedOctets),
                        client->sessions[client->sess_no].server_oct);
+#endif
             }
-
+#if __DBG__
             fprintf(stderr, "SID: 0x%04X.%04X.%04X.%04X \n",
                     ntohl(client->sessions[client->sess_no].sid_addr),
                     ntohl(client->sessions[client->sess_no].sid_time.integer),
                     ntohl(client->sessions[client->sess_no].
                           sid_time.fractional),
                     ntohl(client->sessions[client->sess_no].sid_rand));
-
+#endif
             /* Set socket options */
             set_socket_option(testfd, HDR_TTL);
             set_socket_tos(testfd,
@@ -427,13 +443,17 @@ static int send_accept_session(struct client_info *client, RequestSession * req)
             client->sess_no++;
 
         } else {
+#if __DBG__
             fprintf(stderr, "kTemporaryResourceLimitation: check_time [%d]\n", check_time);
+#endif
             acc.Accept = kTemporaryResourceLimitation;
             acc.Port = 0;
         }
 
     } else {
+#if __DBG__
         fprintf(stderr, "kTemporaryResourceLimitation: used_sockets [%d], sess_no [%d]\n", used_sockets, client->sess_no);
+#endif
         acc.Accept = kTemporaryResourceLimitation;
         acc.Port = 0;
     }
@@ -450,18 +470,23 @@ static int receive_request_session(struct client_info *client,
 
     if(socket_family == AF_INET6) {
         inet_ntop(AF_INET6, &(client->addr6.sin6_addr), str_client, sizeof(str_client));
+#if __DBG__
         fprintf(stderr, "Server received RequestTWSession message\n");
+#endif
     } else {
         char str_server[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &(client->addr.sin_addr), str_client, INET_ADDRSTRLEN);
         struct in_addr se_addr;
         se_addr.s_addr = req->ReceiverAddress;
         inet_ntop(AF_INET, &(se_addr), str_server, INET_ADDRSTRLEN);
+#if __DBG__
         fprintf(stderr, "Server %s received RequestTWSession message\n", str_server);
+#endif
     }
 
     int rv = send_accept_session(client, req);
     if (rv <= 0) {
+
         fprintf(stderr, "[%s] ", str_client);
         perror("Failed to send the Accept-Session message");
     }
@@ -628,7 +653,7 @@ static int receive_test_message(struct client_info *client, int session_index)
     }
 
     /* Print the FW metrics */
-
+#if __DBG__
     print_metrics_server(str_client, socket_family == AF_INET6 ? ntohs(addr6.sin6_port): ntohs(addr.sin_port),
                          ntohs(client->sessions[session_index].
                                req.ReceiverPort),
@@ -642,6 +667,7 @@ static int receive_test_message(struct client_info *client, int session_index)
                (float)100 * client->sessions[session_index].fw_lst_msg /
                client->sessions[session_index].fw_msg);
     }
+#endif
     return rv;
 }
 
@@ -669,7 +695,11 @@ int main(int argc, char *argv[])
     /* Obtain start server time in TWAMP format */
     TWAMPTimestamp StartTime = get_timestamp();
     int listenfd;
+    
+    time_t t = time(NULL);
+    struct tm tm = *localtime(&t);
 
+    fprintf(stderr, "TWAMP server started at %d-%02d-%02d %02d:%02d:%02d\n", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     listenfd = socket(socket_family, SOCK_STREAM, 0);
     if (listenfd < 0) {
         perror("Error opening socket");
