@@ -573,9 +573,9 @@ static int receive_test_message(struct client_info *client, int session_index)
     }
 
     if(socket_family == AF_INET6) {
-        addr.sin_port = client->sessions[session_index].req.SenderPort;
-    } else {
         addr6.sin6_port = client->sessions[session_index].req.SenderPort;
+    } else {
+        addr.sin_port = client->sessions[session_index].req.SenderPort;
     }
     /* FW Loss Calculation */
 
