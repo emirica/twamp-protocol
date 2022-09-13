@@ -478,7 +478,7 @@ static int receive_test_message(struct client_info *client, int session_index)
 {
     struct sockaddr_in addr;
     struct sockaddr_in6 addr6;
-    socklen_t len = sizeof(addr);
+    socklen_t len = (socket_family == AF_INET6)? sizeof(addr6) : sizeof(addr);
     char str_client[INET6_ADDRSTRLEN];
 
     inet_ntop(socket_family, (socket_family == AF_INET6)?
@@ -573,9 +573,9 @@ static int receive_test_message(struct client_info *client, int session_index)
     }
 
     if(socket_family == AF_INET6) {
-        addr.sin_port = client->sessions[session_index].req.SenderPort;
-    } else {
         addr6.sin6_port = client->sessions[session_index].req.SenderPort;
+    } else {
+        addr.sin_port = client->sessions[session_index].req.SenderPort;
     }
     /* FW Loss Calculation */
 
